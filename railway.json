@@ -1,14 +1,14 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
-    "builder": "NIXPACKS",
-    "buildCommand": "npm install && npx prisma generate"
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "npx prisma db push --skip-generate && node src/index.js",
+    "startCommand": "echo BOOT_1_CONTAINER_STARTED; node -v; echo BOOT_2_PUSHING_SCHEMA; npx prisma db push --skip-generate; echo BOOT_3_PUSH_EXIT=$?; echo BOOT_4_STARTING_APP; node src/index.js; echo BOOT_5_APP_EXIT=$?",
     "healthcheckPath": "/healthz",
-    "healthcheckTimeout": 120,
+    "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 5
+    "restartPolicyMaxRetries": 3
   }
 }
