@@ -30,6 +30,6 @@ COPY . .
 
 EXPOSE 8080
 
-# Apply the schema to the freshly provisioned database, then boot.
-# --skip-generate because the client was already generated during install.
-CMD ["sh", "-c", "npx prisma db push --skip-generate && node src/index.js"]
+# Schema push + boot live in scripts/start.sh so the Dockerfile and Railway's
+# startCommand run the exact same sequence.
+CMD ["sh", "scripts/start.sh"]
