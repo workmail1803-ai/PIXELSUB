@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "echo BOOT_1_CONTAINER_STARTED; node -v; echo BOOT_2_PUSHING_SCHEMA; npx prisma db push --skip-generate; echo BOOT_3_PUSH_EXIT=$?; echo BOOT_4_STARTING_APP; node src/index.js; echo BOOT_5_APP_EXIT=$?",
+    "startCommand": "echo BOOT_1_SHELL_OK; node -v; echo BOOT_2_NODE_OK; npx prisma db push --skip-generate; echo BOOT_3_PUSH_DONE; node src/index.js; echo BOOT_4_APP_EXITED",
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
