@@ -2,6 +2,11 @@ node_modules
 .env
 dev.db
 prisma/dev.db
+prisma/dev.db.bak-*
+# Local-only: second Prisma client used by scripts/migrate-to-postgres.mjs
+prisma/generated-pg
+prisma/.pg-migrate.prisma
+logs
 /.git
 /.github
 /*.log
