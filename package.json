@@ -1,0 +1,37 @@
+{
+  "name": "telebot-shop",
+  "version": "1.0.0",
+  "description": "Telegram digital-goods shop with Cryptomus crypto payments and a full admin panel. Railway-ready.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "postinstall": "prisma generate",
+    "build": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate deploy",
+    "start": "node src/index.js",
+    "seed": "node scripts/seed.js",
+    "selftest": "node scripts/selftest.mjs",
+    "dev": "node --watch src/index.js",
+    "dev:setup": "prisma generate --schema=prisma/schema.dev.prisma && prisma db push --schema=prisma/schema.dev.prisma --skip-generate",
+    "dev:seed": "node scripts/seed.js --with-demo-stock",
+    "prod:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "grammy": "^1.32.0",
+    "jsonwebtoken": "^9.0.2",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  }
+}

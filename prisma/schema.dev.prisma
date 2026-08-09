@@ -1,0 +1,182 @@
+// LOCAL DEV ONLY — SQLite variant of schema.prisma (zero external setup).
+// Production uses prisma/schema.prisma (PostgreSQL) on Railway.
+// Differences: provider=sqlite, enums->String, Decimal->Float, no native @db types.
+// Field/model names are identical so the generated client stays code-compatible.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  telegramId   BigInt    @unique
+  username     String?
+  firstName    String?
+  lastName     String?
+  languageCode String?
+  balance      Float     @default(0)
+  isBanned     Boolean   @default(false)
+  isAdmin      Boolean   @default(false)
+  totalSpent   Float     @default(0)
+  lastSeenAt   DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+
+  orders Order[]
+
+  @@index([createdAt])
+  @@index([isBanned])
+}
+
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String
+  emoji     String    @default("📦")
+  sortOrder Int       @default(0)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  products Product[]
+}
+
+model Product {
+  id           Int      @id @default(autoincrement())
+  name         String
+  emoji        String   @default("🛍️")
+  description  String   @default("")
+  price        Float
+  categoryId   Int?
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  usesStock    Boolean  @default(true)
+  fixedContent String   @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  category   Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  stock      StockItem[]
+  orderItems OrderItem[]
+
+  @@index([isActive])
+  @@index([categoryId])
+}
+
+model StockItem {
+  id          Int       @id @default(autoincrement())
+  // Nullable so a product can be deleted without destroying the delivered
+  // codes attached to past orders (SetNull instead of Cascade).
+  productId   Int?
+  content     String
+  isSold      Boolean   @default(false)
+  soldAt      DateTime?
+  orderItemId Int?
+  createdAt   DateTime  @default(now())
+
+  product   Product?   @relation(fields: [productId], references: [id], onDelete: SetNull)
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+
+  @@index([productId, isSold])
+}
+
+model Order {
+  id             Int       @id @default(autoincrement())
+  publicId       String    @unique
+  userId         Int
+  status         String    @default("PENDING")
+  method         String    @default("CRYPTOMUS")
+  kind           String    @default("PURCHASE")
+  amount         Float
+  currency       String    @default("USD")
+
+  invoiceUuid    String?
+  invoiceOrderId String?   @unique
+  payUrl         String?
+  payCurrency    String?
+  payAmount      String?
+  network        String?
+
+  paidAt         DateTime?
+  deliveredAt    DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items  OrderItem[]
+  events OrderEvent[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([userId])
+}
+
+model OrderItem {
+  id          Int    @id @default(autoincrement())
+  orderId     Int
+  // Nullable: the line already snapshots name/emoji/price, so an order stays
+  // fully readable after its product is deleted.
+  productId   Int?
+  productName String
+  emoji       String @default("🛍️")
+  unitPrice   Float
+  quantity    Int
+  lineTotal   Float
+
+  order   Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product?    @relation(fields: [productId], references: [id], onDelete: SetNull)
+  stock   StockItem[]
+
+  @@index([orderId])
+}
+
+model OrderEvent {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  type      String
+  message   String   @default("")
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+model Setting {
+  key       String   @id
+  value     String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model AdminAccount {
+  id           Int       @id @default(autoincrement())
+  username     String    @unique
+  passwordHash String
+  role         String    @default("owner")
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model Broadcast {
+  id        Int      @id @default(autoincrement())
+  text      String
+  sentCount Int      @default(0)
+  failCount Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model CreditRequest {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  telegramId BigInt
+  username   String?
+  amount     Float
+  note       String   @default("")
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+
+  @@index([status])
+}

@@ -1,0 +1,14 @@
+# Never upload these to Railway (build happens fresh on the server)
+node_modules/
+.env
+.env.local
+*.log
+prisma/dev.db
+prisma/dev.db-journal
+prisma/dev.db.bak-*
+dev.db
+.git/
+# Local-only migration tooling — the server generates its own client
+prisma/generated-pg/
+prisma/.pg-migrate.prisma
+logs/

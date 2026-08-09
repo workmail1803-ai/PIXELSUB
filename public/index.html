@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b0d17" />
+  <title>Shop Control · Admin</title>
+  <link rel="stylesheet" href="/css/app.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%92%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <!-- ================= LOGIN ================= -->
+  <div id="login" class="login-screen">
+    <div class="login-aurora"></div>
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="login-badge">🛒</div>
+      <h1>Shop Control</h1>
+      <p class="login-sub">Sign in to your command center</p>
+      <label class="field">
+        <span>Username</span>
+        <input id="login-username" name="username" type="text" autocomplete="username" required />
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">
+        <span>Enter Dashboard</span>
+      </button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+    <div class="login-foot">TeleBot Shop · Admin Panel</div>
+  </div>
+
+  <!-- ================= APP ================= -->
+  <div id="app" class="app hidden">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">🛒</div>
+        <div class="brand-text">
+          <strong id="brand-name">Shop Control</strong>
+          <small>Admin Panel</small>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <a class="nav-item" data-route="dashboard"><span class="ni">📊</span> Dashboard</a>
+        <a class="nav-item" data-route="products"><span class="ni">🏷️</span> Products</a>
+        <a class="nav-item" data-route="orders"><span class="ni">🧾</span> Orders</a>
+        <a class="nav-item" data-route="users"><span class="ni">👥</span> Users</a>
+        <a class="nav-item" data-route="broadcast"><span class="ni">📣</span> Broadcast</a>
+        <a class="nav-item" data-route="settings"><span class="ni">⚙️</span> Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="health" id="health-chip"></div>
+        <button class="btn btn-ghost btn-block" id="logout-btn">⎋ Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-toggle" id="menu-toggle" aria-label="Menu">☰</button>
+        <div class="topbar-title" id="page-title">Dashboard</div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="refresh-btn" title="Refresh">⟳</button>
+          <div class="avatar" id="admin-avatar">A</div>
+        </div>
+      </header>
+      <section class="view" id="view"><!-- rendered by JS --></section>
+    </main>
+  </div>
+
+  <!-- ================= MODAL + TOASTS ================= -->
+  <div id="modal-root" class="modal-root hidden">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal" id="modal"></div>
+  </div>
+  <div id="toasts" class="toasts"></div>
+
+  <script src="/vendor/chart.umd.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/views.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
