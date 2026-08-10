@@ -261,6 +261,45 @@ export async function notifyBinancePending(order) {
 }
 
 /**
+ * A crypto payment arrived short of the invoice by more than the tolerance.
+ * The money is already in the merchant account, so this must never be silent:
+ * ping every admin with the real figures and one-tap approve/decline, and tell
+ * the customer their payment is being looked at rather than that it failed.
+ */
+async function notifyUnderpaid(order, info, shortfall) {
+  const user = await prisma.user.findUnique({ where: { id: order.userId } });
+  const name = user?.username ? '@' + user.username : (user?.firstName || 'User');
+  const gap = shortfall === null ? 'unknown' : shortfall.toFixed(2) + '%';
+
+  const text =
+    `⚠️ <b>Underpaid Crypto Payment</b>\n\n` +
+    `👤 ${escapeHtml(name)}${user ? ` (<code>${user.telegramId}</code>)` : ''}\n` +
+    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n\n` +
+    `💵 Invoiced: <b>${money(num(order.amount), order.currency)}</b>\n` +
+    `📥 Received: <b>${escapeHtml(String(info.payment_amount ?? '?'))} ${escapeHtml(order.currency)}</b>` +
+    `${info.payer_amount ? ` (${escapeHtml(String(info.payer_amount))} ${escapeHtml(info.payer_currency || '')})` : ''}\n` +
+    `📉 Short by: <b>${gap}</b>\n` +
+    `${info.merchant_amount ? `🏦 Credited to you: <b>${escapeHtml(String(info.merchant_amount))}</b>\n` : ''}` +
+    `${info.txid ? `🔗 <code>${escapeHtml(String(info.txid).slice(0, 24))}…</code>\n` : ''}` +
+    `\nThe funds <b>did arrive</b>. Approve to deliver, or decline and refund.`;
+
+  const kb = new InlineKeyboard()
+    .text('✅ Approve & deliver', `a:binok:${order.id}`)
+    .text('❌ Decline', `a:binno:${order.id}`);
+
+  for (const id of config.telegram.adminIds) {
+    await sendMessageSafe(id, text, { reply_markup: kb });
+  }
+
+  await sendMessageSafe(
+    order.userId && user ? user.telegramId : order.userId,
+    `⏳ <b>Payment received — being verified</b>\n\n` +
+      `We got your payment for order <code>${escapeHtml(order.publicId)}</code>, but it came in slightly under the invoiced amount.\n\n` +
+      `Our team is reviewing it now and you'll get your items here shortly. 🙏`
+  );
+}
+
+/**
  * Admin approves a Binance payment → mark paid and deliver.
  */
 export async function approveBinancePayment(orderId) {
@@ -540,6 +579,40 @@ export async function reconcileOrder(order) {
     await markPaidAndDeliver(order.id, info);
     return 'PAID';
   }
+
+  // Funds arrived but landed under the invoice — typically a customer sending a
+  // round number of USDT, which the exchange rate turns into a few cents short.
+  // Deliver anyway when the gap is trivial; otherwise hand it to an admin. The
+  // one thing we never do is silently fail an order whose money we received.
+  if (cryptomus.UNDERPAID_STATUSES.has(status)) {
+    const shortfall = cryptomus.shortfallPercent(info, num(order.amount));
+    const tolerance = config.cryptomus.underpayTolerancePct;
+
+    if (shortfall !== null && shortfall <= tolerance) {
+      logger.info(
+        { order: order.publicId, shortfallPct: shortfall.toFixed(3), tolerance },
+        'underpaid within tolerance — delivering'
+      );
+      await logEvent(
+        order.id,
+        'note',
+        `underpaid by ${shortfall.toFixed(2)}% (within ${tolerance}% tolerance) — auto-delivered`
+      );
+      await markPaidAndDeliver(order.id, info);
+      return 'PAID';
+    }
+
+    if (order.status === 'PENDING') {
+      await logEvent(
+        order.id,
+        'note',
+        `underpaid by ${shortfall === null ? 'an unknown amount' : shortfall.toFixed(2) + '%'} — awaiting admin review`
+      );
+      await notifyUnderpaid(order, info, shortfall);
+    }
+    return order.status; // stays PENDING so an admin can approve or refund
+  }
+
   if (cryptomus.FAILED_STATUSES.has(status)) {
     if (order.status === 'PENDING') {
       await prisma.order.update({ where: { id: order.id }, data: { status: 'FAILED' } });

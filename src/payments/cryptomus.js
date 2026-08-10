@@ -6,8 +6,32 @@ const { merchantId, paymentKey, apiBase } = config.cryptomus;
 
 // Statuses Cryptomus considers a completed, spendable payment.
 export const PAID_STATUSES = new Set(['paid', 'paid_over']);
-// Statuses that are dead ends (won't ever become paid).
-export const FAILED_STATUSES = new Set(['fail', 'system_fail', 'cancel', 'wrong_amount']);
+// Statuses that are dead ends (won't ever become paid). NOTE: `wrong_amount`
+// is deliberately NOT here — the funds *did* arrive, just slightly short of
+// the invoice, so it is handled by the underpayment tolerance below instead of
+// being failed outright.
+export const FAILED_STATUSES = new Set(['fail', 'system_fail', 'cancel']);
+// Funds received, but under the invoiced amount.
+export const UNDERPAID_STATUSES = new Set(['wrong_amount']);
+
+/**
+ * How far short of the invoice a payment landed, as a percentage.
+ *
+ * Cryptomus reports the received value in the invoice currency as
+ * `payment_amount` (with `payment_amount_usd` as a USD-denominated backup).
+ * Returns null when neither is usable, so callers can fall back to failing
+ * safely rather than delivering on a number they could not verify.
+ */
+export function shortfallPercent(info, owedAmount) {
+  const owed = Number(owedAmount);
+  if (!Number.isFinite(owed) || owed <= 0) return null;
+
+  const received = Number(info?.payment_amount ?? info?.payment_amount_usd);
+  if (!Number.isFinite(received) || received < 0) return null;
+
+  if (received >= owed) return 0;
+  return ((owed - received) / owed) * 100;
+}
 
 function sign(bodyStr, key = paymentKey) {
   const b64 = Buffer.from(bodyStr).toString('base64');

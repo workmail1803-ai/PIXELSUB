@@ -15,6 +15,11 @@ function int(name, fallback) {
   return Number.isFinite(v) ? v : fallback;
 }
 
+function float(name, fallback) {
+  const v = parseFloat(process.env[name] ?? '');
+  return Number.isFinite(v) && v >= 0 ? v : fallback;
+}
+
 // Derive the public URL. Railway exposes RAILWAY_PUBLIC_DOMAIN.
 function derivePublicUrl() {
   if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, '');
@@ -52,6 +57,13 @@ const config = {
     paymentKey: required('CRYPTOMUS_PAYMENT_API_KEY'),
     payoutKey: required('CRYPTOMUS_PAYOUT_API_KEY'),
     apiBase: 'https://api.cryptomus.com/v1',
+    // Cryptomus flags a payment `wrong_amount` when the received value lands
+    // even fractionally under the invoice — a customer sending a round 10 USDT
+    // for a $10 order arrives ~0.1% short once the USDT rate is applied, and
+    // would otherwise be told their payment failed while their money sits in
+    // the merchant account. Anything short by up to this percentage is treated
+    // as paid and delivered automatically.
+    underpayTolerancePct: float('CRYPTOMUS_UNDERPAY_TOLERANCE_PCT', 2),
   },
 
   binance: {
