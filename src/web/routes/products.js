@@ -13,6 +13,7 @@ function serializeProduct(p) {
     emoji: p.emoji,
     description: p.description,
     price: num(p.price),
+    cost: num(p.cost),
     categoryId: p.categoryId,
     category: p.category ? { id: p.category.id, name: p.category.name, emoji: p.category.emoji } : null,
     isActive: p.isActive,
@@ -54,6 +55,7 @@ router.post('/', async (req, res) => {
       emoji: b.emoji || '🛍️',
       description: b.description || '',
       price: Number(b.price),
+      cost: Number(b.cost) || 0,
       categoryId: b.categoryId ? Number(b.categoryId) : null,
       isActive: b.isActive !== false,
       sortOrder: Number(b.sortOrder) || 0,
@@ -72,6 +74,7 @@ router.put('/:id', async (req, res) => {
   if (b.emoji !== undefined) data.emoji = b.emoji;
   if (b.description !== undefined) data.description = b.description;
   if (b.price !== undefined) data.price = Number(b.price);
+  if (b.cost !== undefined) data.cost = Number(b.cost) || 0;
   if (b.categoryId !== undefined) data.categoryId = b.categoryId ? Number(b.categoryId) : null;
   if (b.isActive !== undefined) data.isActive = Boolean(b.isActive);
   if (b.sortOrder !== undefined) data.sortOrder = Number(b.sortOrder) || 0;

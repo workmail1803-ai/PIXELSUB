@@ -3,14 +3,14 @@ import logger from '../logger.js';
 import config from '../config.js';
 import { money, num, escapeHtml } from '../utils.js';
 import { getSetting, render } from '../services/settings.js';
-import { createOrder, createBinanceOrder, notifyBinancePending, reconcileOrder, payWithBalance } from '../services/orders.js';
+import { createOrder, createManualOrder, notifyManualPending, reconcileOrder, payWithBalance } from '../services/orders.js';
 import { showWallet, handleWalletText, clearWalletState } from './wallet.js';
 import {
   mainMenuKeyboard,
   shopKeyboard,
   productKeyboard,
   payKeyboard,
-  binancePayKeyboard,
+  manualPayKeyboard,
   ordersKeyboard,
   orderDetailKeyboard,
   supportKeyboard,
@@ -182,7 +182,11 @@ async function doCheckout(ctx, productId, qty) {
   await smartSend(ctx, text, payKeyboard(order));
 }
 
-async function doBinanceCheckout(ctx, productId, qty) {
+async function doManualCheckout(ctx, method, productId, qty) {
+  const m = config.manualMethod(method);
+  if (!m) {
+    return ctx.answerCallbackQuery({ text: 'Payment method unavailable.', show_alert: true }).catch(() => {});
+  }
   const product = await getProductWithStock(productId);
   if (!product || !product.isActive) {
     return ctx.answerCallbackQuery({ text: 'Product unavailable.', show_alert: true }).catch(() => {});
@@ -192,7 +196,7 @@ async function doBinanceCheckout(ctx, productId, qty) {
 
   let result;
   try {
-    result = await createBinanceOrder({ user: ctx.dbUser, product, quantity: qty });
+    result = await createManualOrder({ user: ctx.dbUser, product, quantity: qty, method: m.key });
   } catch (e) {
     if (e.code === 'OUT_OF_STOCK') {
       return smartSend(
@@ -201,7 +205,7 @@ async function doBinanceCheckout(ctx, productId, qty) {
         backMenuKeyboard().text('⬅️ Back', `p:${productId}`)
       );
     }
-    logger.error({ err: e.message }, 'Binance checkout failed');
+    logger.error({ err: e.message, method: m.key }, 'manual checkout failed');
     return smartSend(
       ctx,
       '⚠️ We couldn\'t create your order right now. Please try again.',
@@ -210,28 +214,27 @@ async function doBinanceCheckout(ctx, productId, qty) {
   }
 
   const { order } = result;
-  const binanceId = config.binance.payId;
   const text =
-    `🟡 <b>Pay with Binance</b>\n\n` +
+    `${m.emoji} <b>Pay with ${escapeHtml(m.label)}</b>\n\n` +
     `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n` +
     `${escapeHtml(product.emoji)} ${escapeHtml(product.name)} ×${qty}\n` +
     `💵 <b>Amount:</b> ${money(num(order.amount), order.currency)}\n\n` +
     `━━━━━━━━━━━━━━━\n` +
-    `📲 <b>Send payment to this Binance ID:</b>\n` +
-    `<code>${binanceId}</code>\n` +
+    `📲 <b>Send payment to this ${escapeHtml(m.idLabel)}:</b>\n` +
+    `<code>${escapeHtml(m.payId)}</code>\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `💡 <b>How to pay:</b>\n` +
-    `1️⃣ Open Binance app\n` +
+    `1️⃣ Open the ${escapeHtml(m.label)} app\n` +
     `2️⃣ Go to <b>Pay</b> → <b>Send</b>\n` +
-    `3️⃣ Enter ID: <code>${binanceId}</code>\n` +
+    `3️⃣ Enter ${escapeHtml(m.idLabel)}: <code>${escapeHtml(m.payId)}</code>\n` +
     `4️⃣ Send <b>${money(num(order.amount), order.currency)}</b>\n` +
     `5️⃣ Tap <b>"I've Paid"</b> below\n\n` +
     `⏱️ This order expires in ${config.shop.orderExpiryMin} minutes.`;
 
-  await smartSend(ctx, text, binancePayKeyboard(order));
+  await smartSend(ctx, text, manualPayKeyboard(order));
 }
 
-async function doBinancePaid(ctx, orderId) {
+async function doManualPaid(ctx, orderId) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
   if (!order || order.userId !== ctx.dbUser.id) {
     return ctx.answerCallbackQuery({ text: 'Order not found.', show_alert: true }).catch(() => {});
@@ -241,7 +244,7 @@ async function doBinancePaid(ctx, orderId) {
   }
 
   await ctx.answerCallbackQuery({ text: 'Notifying admin…' }).catch(() => {});
-  await notifyBinancePending(order);
+  await notifyManualPending(order);
 
   await smartSend(
     ctx,
@@ -254,14 +257,14 @@ async function doBinancePaid(ctx, orderId) {
   );
 }
 
-async function doBinanceCancel(ctx, orderId) {
+async function doManualCancel(ctx, orderId) {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order || order.userId !== ctx.dbUser.id) {
     return ctx.answerCallbackQuery({ text: 'Order not found.', show_alert: true }).catch(() => {});
   }
   if (order.status === 'PENDING') {
     await prisma.order.update({ where: { id: order.id }, data: { status: 'CANCELLED' } });
-    await prisma.orderEvent.create({ data: { orderId: order.id, type: 'cancelled', message: 'Cancelled by user (Binance)' } });
+    await prisma.orderEvent.create({ data: { orderId: order.id, type: 'cancelled', message: 'Cancelled by user' } });
   }
   await ctx.answerCallbackQuery({ text: 'Order cancelled.' }).catch(() => {});
   await showShop(ctx);
@@ -424,15 +427,27 @@ export function registerHandlers(bot) {
     await showOrderDetail(ctx, Number(ctx.match[1]));
   });
 
-  // Binance Pay handlers
+  // Manually-verified payments (Binance, Bybit, …)
+  bot.callbackQuery(/^mchk:([A-Z]+):(\d+):(\d+)$/, async (ctx) => {
+    await doManualCheckout(ctx, ctx.match[1], Number(ctx.match[2]), Number(ctx.match[3]));
+  });
+  bot.callbackQuery(/^mpaid:(\d+)$/, async (ctx) => {
+    await doManualPaid(ctx, Number(ctx.match[1]));
+  });
+  bot.callbackQuery(/^mcancel:(\d+)$/, async (ctx) => {
+    await doManualCancel(ctx, Number(ctx.match[1]));
+  });
+
+  // Legacy Binance-only callbacks. Messages already sitting in customers' chats
+  // still carry these buttons, so they must keep working.
   bot.callbackQuery(/^binchk:(\d+):(\d+)$/, async (ctx) => {
-    await doBinanceCheckout(ctx, Number(ctx.match[1]), Number(ctx.match[2]));
+    await doManualCheckout(ctx, 'BINANCE', Number(ctx.match[1]), Number(ctx.match[2]));
   });
   bot.callbackQuery(/^binpaid:(\d+)$/, async (ctx) => {
-    await doBinancePaid(ctx, Number(ctx.match[1]));
+    await doManualPaid(ctx, Number(ctx.match[1]));
   });
   bot.callbackQuery(/^bincancel:(\d+)$/, async (ctx) => {
-    await doBinanceCancel(ctx, Number(ctx.match[1]));
+    await doManualCancel(ctx, Number(ctx.match[1]));
   });
 
   // Fallback for any stray text: wallet custom-amount entry, else show the menu.

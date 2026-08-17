@@ -2,7 +2,6 @@ import { InlineKeyboard } from 'grammy';
 import { money, num } from '../utils.js';
 import config from '../config.js';
 
-const binanceConfigured = () => Boolean(config.binance.payId);
 const cryptomusConfigured = () => Boolean(config.cryptomus.merchantId && config.cryptomus.paymentKey);
 
 export function mainMenuKeyboard(isAdmin = false) {
@@ -43,9 +42,9 @@ export function productKeyboard(product, qty, maxQty, opts = {}) {
   if (cryptomusConfigured()) {
     kb.text(`💳 Pay ${money(total)} with Crypto`, `checkout:${product.id}:${qty}`).row();
   }
-  // Binance Pay option (manual verification)
-  if (binanceConfigured()) {
-    kb.text(`🟡 Pay ${money(total)} with Binance`, `binchk:${product.id}:${qty}`).row();
+  // One button per manually-verified method (Binance, Bybit, …).
+  for (const m of config.manualMethods) {
+    kb.text(`${m.emoji} Pay ${money(total)} with ${m.label}`, `mchk:${m.key}:${product.id}:${qty}`).row();
   }
   // Offer wallet payment when the customer has enough balance.
   if (opts.balance !== undefined && opts.balance >= total) {
@@ -55,13 +54,16 @@ export function productKeyboard(product, qty, maxQty, opts = {}) {
   return kb;
 }
 
-// Binance Pay instructions after order is created
-export function binancePayKeyboard(order) {
+// Shown after a manually-verified order is created.
+export function manualPayKeyboard(order) {
   const kb = new InlineKeyboard();
-  kb.text('✅ I\'ve Paid — Verify', `binpaid:${order.id}`).row();
-  kb.text('❌ Cancel Order', `bincancel:${order.id}`).text('🏠 Menu', 'menu');
+  kb.text('✅ I\'ve Paid — Verify', `mpaid:${order.id}`).row();
+  kb.text('❌ Cancel Order', `mcancel:${order.id}`).text('🏠 Menu', 'menu');
   return kb;
 }
+
+// Older name kept for any remaining importer.
+export const binancePayKeyboard = manualPayKeyboard;
 
 // After an invoice is created
 export function payKeyboard(order) {

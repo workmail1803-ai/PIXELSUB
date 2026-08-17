@@ -70,6 +70,16 @@ const config = {
     payId: (process.env.BINANCE_PAY_ID || '').trim(),
   },
 
+  // Payment methods verified by hand: the customer sends funds straight to the
+  // owner's exchange account, then an admin confirms it in Telegram. Adding
+  // another exchange means adding one entry here — everything downstream
+  // (buttons, checkout, top-ups, admin approval, poller exclusion) is driven
+  // off this list. Only entries with an id configured are offered.
+  manualMethods: [
+    { key: 'BINANCE', label: 'Binance', emoji: '🟡', idLabel: 'Binance ID', payId: (process.env.BINANCE_PAY_ID || '').trim() },
+    { key: 'BYBIT', label: 'Bybit', emoji: '🟠', idLabel: 'Bybit UID', payId: (process.env.BYBIT_PAY_ID || '').trim() },
+  ].filter((m) => m.payId),
+
   admin: {
     username: process.env.ADMIN_USERNAME || 'admin',
     password: process.env.ADMIN_PASSWORD || 'admin',
@@ -82,6 +92,10 @@ const config = {
     orderExpiryMin: int('ORDER_EXPIRY_MINUTES', 60),
   },
 };
+
+// Fast lookups for the manual methods above.
+config.manualMethodKeys = new Set(config.manualMethods.map((m) => m.key));
+config.manualMethod = (key) => config.manualMethods.find((m) => m.key === key) || null;
 
 // A gentle self-check so misconfiguration is obvious in logs at boot.
 config.missing = [];

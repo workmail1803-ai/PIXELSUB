@@ -56,6 +56,9 @@ model Product {
   emoji       String   @default("🛍️")
   description String   @default("")
   price       Decimal  @db.Decimal(12, 2)
+  // What this item costs the shop owner. Used for profit reporting only —
+  // never shown to customers.
+  cost        Decimal  @default(0) @db.Decimal(12, 2)
   categoryId  Int?
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
@@ -111,6 +114,7 @@ enum OrderStatus {
 enum PaymentMethod {
   CRYPTOMUS
   BINANCE // manual verification: customer pays the admin's Binance ID directly
+  BYBIT // manual verification: customer pays the admin's Bybit UID directly
   BALANCE
 }
 
@@ -156,6 +160,9 @@ model OrderItem {
   productName String  // snapshot at purchase time
   emoji      String   @default("🛍️")
   unitPrice  Decimal  @db.Decimal(12, 2)
+  // Cost snapshot at purchase time. Kept per-line so historical profit stays
+  // accurate after the product's cost is later edited.
+  unitCost   Decimal  @default(0) @db.Decimal(12, 2)
   quantity   Int
   lineTotal  Decimal  @db.Decimal(12, 2)
 

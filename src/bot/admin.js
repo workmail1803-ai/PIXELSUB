@@ -1,9 +1,10 @@
 import { InlineKeyboard } from 'grammy';
 import prisma from '../db.js';
 import logger from '../logger.js';
+import config from '../config.js';
 import { money, num, escapeHtml, sleep, chunk } from '../utils.js';
 import { sendMessageSafe } from './delivery.js';
-import { approveBinancePayment, declineBinancePayment } from '../services/orders.js';
+import { approveManualPayment, declineManualPayment } from '../services/orders.js';
 
 // In-memory per-admin conversation state (fine: only admins use it, resets on restart).
 const adminState = new Map();
@@ -64,6 +65,8 @@ export async function showAdminMenu(ctx) {
     .text(`💳 Credit Requests${pendingCredits ? ` (${pendingCredits})` : ''}`, 'a:credits')
     .row()
     .text('🧾 Orders', 'a:orders')
+    .text('📈 Profit', 'a:profit')
+    .row()
     .text('📣 Broadcast', 'a:bc')
     .row()
     .text('🛍️ Open Shop (as customer)', 'shop');
@@ -91,6 +94,93 @@ async function showStats(ctx) {
     `💰 Revenue: <b>${money(num(rev._sum.amount))}</b>\n` +
     `📈 Today: <b>${money(num(revToday._sum.amount))}</b>`;
   await adminSend(ctx, text, new InlineKeyboard().text('⬅️ Back', 'a:menu'));
+}
+
+// ============================ PROFIT ============================
+// Only real product sales count: top-ups move money between the customer's
+// wallet and the shop, they are not revenue on an item. Balance-paid orders DO
+// count — the sale happened, it was just funded from credit.
+const SOLD_STATUSES = ['PAID', 'DELIVERED'];
+
+async function profitRows() {
+  const items = await prisma.orderItem.findMany({
+    where: { order: { status: { in: SOLD_STATUSES }, kind: 'PURCHASE' } },
+    select: { productId: true, productName: true, emoji: true, quantity: true, lineTotal: true, unitCost: true },
+  });
+
+  const byProduct = new Map();
+  let revenue = 0;
+  let cost = 0;
+  let unitsSold = 0;
+  let linesMissingCost = 0;
+
+  for (const i of items) {
+    const rev = num(i.lineTotal);
+    const c = num(i.unitCost) * i.quantity;
+    revenue += rev;
+    cost += c;
+    unitsSold += i.quantity;
+    if (num(i.unitCost) === 0) linesMissingCost++;
+
+    const key = i.productId ?? `deleted:${i.productName}`;
+    const row = byProduct.get(key) || { name: i.productName, emoji: i.emoji, qty: 0, revenue: 0, cost: 0 };
+    row.qty += i.quantity;
+    row.revenue += rev;
+    row.cost += c;
+    byProduct.set(key, row);
+  }
+
+  const rows = [...byProduct.values()]
+    .map((r) => ({ ...r, profit: r.revenue - r.cost }))
+    .sort((a, b) => b.profit - a.profit);
+
+  return { rows, revenue, cost, profit: revenue - cost, unitsSold, linesMissingCost, lineCount: items.length };
+}
+
+async function showProfit(ctx, page = 0) {
+  clearState(ctx.from.id);
+  const { rows, revenue, cost, profit, unitsSold, linesMissingCost, lineCount } = await profitRows();
+
+  if (!lineCount) {
+    return adminSend(ctx, '📈 <b>Profit</b>\n\nNo completed sales yet.', new InlineKeyboard().text('⬅️ Back', 'a:menu'));
+  }
+
+  const PER_PAGE = 8;
+  const pages = Math.max(1, Math.ceil(rows.length / PER_PAGE));
+  const p = Math.min(Math.max(0, page), pages - 1);
+  const slice = rows.slice(p * PER_PAGE, p * PER_PAGE + PER_PAGE);
+
+  const marginPct = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : '0.0';
+  let text =
+    `📈 <b>Profit</b>\n\n` +
+    `💵 Revenue: <b>${money(revenue)}</b>\n` +
+    `🏷 Cost: <b>${money(cost)}</b>\n` +
+    `${profit >= 0 ? '✅' : '🔻'} Profit: <b>${money(profit)}</b> (${marginPct}%)\n` +
+    `📦 Units sold: <b>${unitsSold}</b>\n`;
+
+  if (linesMissingCost) {
+    text +=
+      `\n⚠️ <b>${linesMissingCost}</b> of ${lineCount} sold line(s) have no cost recorded, ` +
+      `so profit is overstated. Set a cost on those products — it applies to future sales.\n`;
+  }
+
+  text += `\n<b>By product</b>${pages > 1 ? ` (page ${p + 1}/${pages})` : ''}\n`;
+  for (const r of slice) {
+    const pct = r.revenue > 0 ? ((r.profit / r.revenue) * 100).toFixed(0) : '0';
+    text +=
+      `\n${escapeHtml(r.emoji)} <b>${escapeHtml(r.name)}</b> ×${r.qty}\n` +
+      `   ${money(r.revenue)} − ${money(r.cost)} = <b>${money(r.profit)}</b> (${pct}%)\n`;
+  }
+
+  const kb = new InlineKeyboard();
+  if (pages > 1) {
+    if (p > 0) kb.text('⬅️ Prev', `a:profit:${p - 1}`);
+    kb.text(`📄 ${p + 1}/${pages}`, 'a:noop');
+    if (p < pages - 1) kb.text('Next ➡️', `a:profit:${p + 1}`);
+    kb.row();
+  }
+  kb.text('🏷️ Products', 'a:products').text('⬅️ Back', 'a:menu');
+  await adminSend(ctx, text, kb);
 }
 
 // ============================ PRODUCTS ============================
@@ -122,16 +212,25 @@ async function showProduct(ctx, id) {
   if (!p) return adminSend(ctx, 'Product not found.', new InlineKeyboard().text('⬅️ Products', 'a:products'));
 
   const sold = await prisma.stockItem.count({ where: { productId: id, isSold: true } });
+  const price = num(p.price);
+  const cost = num(p.cost);
+  const marginLine = cost > 0
+    ? `📈 Margin: <b>${money(price - cost)}</b> (${(((price - cost) / price) * 100).toFixed(1)}%)\n`
+    : `📈 Margin: <i>set a cost to track profit</i>\n`;
+
   const text =
     `${escapeHtml(p.emoji)} <b>${escapeHtml(p.name)}</b>\n\n` +
-    `💵 Price: <b>${money(num(p.price))}</b>\n` +
+    `💵 Price: <b>${money(price)}</b>\n` +
+    `🏷 Cost: <b>${cost > 0 ? money(cost) : '—'}</b>\n` +
+    marginLine +
     `${p.usesStock ? `📦 In stock: <b>${p._count.stock}</b> · Sold: <b>${sold}</b>` : '♾️ Unlimited (fixed content)'}\n` +
     `👁 Visible in shop: <b>${p.isActive ? 'Yes ✅' : 'No 🚫'}</b>\n` +
     (p.description ? `\n${escapeHtml(p.description)}` : '');
 
   const kb = new InlineKeyboard();
   if (p.usesStock) kb.text('📦 View Stock', `a:pstock:${p.id}`).text('➕ Add Stock', `a:paddstock:${p.id}`).row();
-  kb.text('💵 Edit Price', `a:pprice:${p.id}`).text(p.isActive ? '🚫 Hide' : '✅ Show', `a:ptoggle:${p.id}`).row();
+  kb.text('💵 Edit Price', `a:pprice:${p.id}`).text('🏷 Edit Cost', `a:pcost:${p.id}`).row();
+  kb.text(p.isActive ? '🚫 Hide' : '✅ Show', `a:ptoggle:${p.id}`).row();
   kb.text('🗑 Delete', `a:pdel:${p.id}`).row();
   kb.text('⬅️ Products', 'a:products');
   await adminSend(ctx, text, kb);
@@ -239,6 +338,19 @@ async function startEditPrice(ctx, id) {
   await adminSend(ctx, `💵 Send the <b>new price</b> for ${escapeHtml(p.emoji)} ${escapeHtml(p.name)} (current ${money(num(p.price))}):`, cancelKb());
 }
 
+async function startEditCost(ctx, id) {
+  const p = await prisma.product.findUnique({ where: { id } });
+  if (!p) return;
+  setState(ctx.from.id, { action: 'edit_cost', productId: id });
+  await adminSend(
+    ctx,
+    `🏷 Send your <b>cost per unit</b> for ${escapeHtml(p.emoji)} ${escapeHtml(p.name)}\n` +
+      `(currently ${num(p.cost) > 0 ? money(num(p.cost)) : 'not set'}, selling at ${money(num(p.price))}).\n\n` +
+      `This is what the item costs <i>you</i> — customers never see it. Send <code>0</code> to clear.`,
+    cancelKb()
+  );
+}
+
 async function startAddStock(ctx, id) {
   const p = await prisma.product.findUnique({ where: { id } });
   if (!p) return;
@@ -290,6 +402,22 @@ async function handleAdminText(ctx) {
     await prisma.product.update({ where: { id: st.productId }, data: { price } });
     clearState(ctx.from.id);
     await ctx.reply(`✅ Price updated to ${money(price)}.`, { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ Product', `a:prod:${st.productId}`) });
+    return true;
+  }
+
+  if (st.action === 'edit_cost') {
+    const cost = parseFloat(text.replace(',', '.'));
+    if (!(cost >= 0)) { await ctx.reply('❌ Please send a valid number, e.g. 2.50 (or 0 to clear)'); return true; }
+    const p = await prisma.product.update({ where: { id: st.productId }, data: { cost } });
+    clearState(ctx.from.id);
+    const price = num(p.price);
+    const margin = price - cost;
+    await ctx.reply(
+      `✅ Cost set to ${money(cost)}.\n` +
+        (cost > 0 ? `📈 Margin: <b>${money(margin)}</b> per unit (${((margin / price) * 100).toFixed(1)}%)` : 'Cost cleared.') +
+        `\n\n<i>Applies to future sales — past orders keep the cost recorded at the time.</i>`,
+      { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ Product', `a:prod:${st.productId}`) }
+    );
     return true;
   }
 
@@ -462,7 +590,7 @@ async function approveBinance(ctx, orderId) {
   if (['DELIVERED', 'REFUNDED', 'CANCELLED'].includes(order.status)) {
     return ctx.answerCallbackQuery({ text: `Order already ${order.status.toLowerCase()}.`, show_alert: true }).catch(() => {});
   }
-  await approveBinancePayment(orderId);
+  await approveManualPayment(orderId);
   await ctx.answerCallbackQuery({ text: 'Approved ✅ — delivering items!' }).catch(() => {});
   // Edit the admin message to reflect approval
   try {
@@ -479,7 +607,7 @@ async function declineBinance(ctx, orderId) {
   if (['DELIVERED', 'REFUNDED', 'CANCELLED'].includes(order.status)) {
     return ctx.answerCallbackQuery({ text: `Order already ${order.status.toLowerCase()}.`, show_alert: true }).catch(() => {});
   }
-  await declineBinancePayment(orderId);
+  await declineManualPayment(orderId);
   await ctx.answerCallbackQuery({ text: 'Declined ❌' }).catch(() => {});
   try {
     await ctx.editMessageText(
@@ -504,8 +632,11 @@ function statusDot(s) {
   return ({ PENDING: '⏳', PAID: '💵', DELIVERED: '✅', CANCELLED: '❌', EXPIRED: '⌛', REFUNDED: '↩️', FAILED: '⚠️' }[s] || '•');
 }
 
-function methodLabel(m) {
-  return ({ CRYPTOMUS: '🪙 Cryptomus', BINANCE: '🟡 Binance (manual)', BALANCE: '💳 Wallet balance' }[m] || m || '—');
+function methodLabel(key) {
+  if (key === 'CRYPTOMUS') return '🪙 Cryptomus';
+  if (key === 'BALANCE') return '💳 Wallet balance';
+  const m = config.manualMethod(key);
+  return m ? `${m.emoji} ${m.label} (manual)` : (key || '—');
 }
 
 function fmtDate(d) {
@@ -605,7 +736,7 @@ async function showOrder(ctx, id) {
 
   const kb = new InlineKeyboard();
   if (codeCount) kb.text(`🔐 View delivered (${codeCount})`, `a:oitem:${o.id}`).row();
-  if (o.method === 'BINANCE' && !['DELIVERED', 'CANCELLED', 'REFUNDED'].includes(o.status)) {
+  if (config.manualMethodKeys.has(o.method) && !['DELIVERED', 'CANCELLED', 'REFUNDED'].includes(o.status)) {
     kb.text('✅ Approve payment', `a:obinok:${o.id}`).text('❌ Decline', `a:obinno:${o.id}`).row();
   }
   if (['PAID', 'DELIVERED'].includes(o.status)) kb.text('📤 Re-deliver', `a:oredeliver:${o.id}`).row();
@@ -675,8 +806,8 @@ async function decideBinanceFromOrder(ctx, orderId, approve) {
   if (['DELIVERED', 'REFUNDED', 'CANCELLED'].includes(order.status)) {
     return ctx.answerCallbackQuery({ text: `Already ${order.status.toLowerCase()}.`, show_alert: true }).catch(() => {});
   }
-  if (approve) await approveBinancePayment(orderId);
-  else await declineBinancePayment(orderId);
+  if (approve) await approveManualPayment(orderId);
+  else await declineManualPayment(orderId);
   await ctx.answerCallbackQuery({ text: approve ? 'Approved ✅ — delivering' : 'Declined ❌' }).catch(() => {});
   await showOrder(ctx, orderId);
 }
@@ -693,6 +824,9 @@ export function registerAdminHandlers(bot) {
     [/^a:prod:(\d+)$/, (ctx) => showProduct(ctx, Number(ctx.match[1]))],
     [/^a:ptoggle:(\d+)$/, (ctx) => toggleProduct(ctx, Number(ctx.match[1]))],
     [/^a:pprice:(\d+)$/, (ctx) => startEditPrice(ctx, Number(ctx.match[1]))],
+    [/^a:pcost:(\d+)$/, (ctx) => startEditCost(ctx, Number(ctx.match[1]))],
+    [/^a:profit$/, (ctx) => showProfit(ctx, 0)],
+    [/^a:profit:(\d+)$/, (ctx) => showProfit(ctx, Number(ctx.match[1]))],
     [/^a:pdel:(\d+)$/, (ctx) => confirmDelete(ctx, Number(ctx.match[1]))],
     [/^a:pdelyes:(\d+)$/, (ctx) => doDelete(ctx, Number(ctx.match[1]))],
     [/^a:pstock:(\d+)$/, (ctx) => viewStock(ctx, Number(ctx.match[1]))],

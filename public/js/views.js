@@ -37,6 +37,46 @@ const Views = (() => {
     ]);
     wrap.appendChild(stats);
 
+    // Profit row — product sales only, top-ups excluded.
+    const profitTiles = el('div', { class: 'grid cols-4', style: 'margin-top:18px' }, [
+      statTile({ icon: '🛍️', label: 'Sales Revenue', value: money(s.salesRevenue || 0), delta: 'products only', tint: 'linear-gradient(135deg,#6c5cff,#22d3ee)' }),
+      statTile({ icon: '🏷️', label: 'Cost of Goods', value: money(s.totalCost || 0), delta: 'at time of sale', tint: 'linear-gradient(135deg,#ffb020,#ff5c7a)' }),
+      statTile({ icon: (s.profit || 0) >= 0 ? '📈' : '📉', label: 'Profit', value: money(s.profit || 0), delta: `${s.margin || 0}% margin`, tint: 'linear-gradient(135deg,#37d399,#6c5cff)' }),
+      statTile({ icon: '⚠️', label: 'Lines Without Cost', value: num(s.linesMissingCost || 0), delta: s.linesMissingCost ? 'profit overstated' : 'all costed', tint: 'linear-gradient(135deg,#94a3b8,#64748b)' }),
+    ]);
+    wrap.appendChild(profitTiles);
+
+    // Per-product profit table
+    if (Array.isArray(d.productProfit) && d.productProfit.length) {
+      const rows = d.productProfit.map((r) =>
+        el('tr', {}, [
+          el('td', { text: `${r.emoji || ''} ${r.name}` }),
+          el('td', { text: num(r.qty) }),
+          el('td', { text: money(r.revenue) }),
+          el('td', { text: money(r.cost) }),
+          el('td', { class: r.profit >= 0 ? 'ok' : 'bad', text: money(r.profit) }),
+          el('td', { text: r.revenue > 0 ? `${Math.round((r.profit / r.revenue) * 100)}%` : '—' }),
+        ])
+      );
+      const profitCard = el('div', { class: 'card', style: 'margin-top:18px' }, [
+        el('div', { class: 'card-head' }, [
+          el('div', {}, [
+            el('h3', { text: 'Profit by product' }),
+            el('div', { class: 'sub', text: 'Cost is the value recorded at the time of each sale' }),
+          ]),
+        ]),
+        el('div', { class: 'table-wrap' }, [
+          el('table', { class: 'table' }, [
+            el('thead', {}, [
+              el('tr', {}, ['Product', 'Sold', 'Revenue', 'Cost', 'Profit', 'Margin'].map((h) => el('th', { text: h }))),
+            ]),
+            el('tbody', {}, rows),
+          ]),
+        ]),
+      ]);
+      wrap.appendChild(profitCard);
+    }
+
     const row = el('div', { class: 'grid cols-2', style: 'margin-top:18px' });
     // Revenue chart card
     const chartCard = el('div', { class: 'card' }, [
@@ -178,6 +218,7 @@ const Views = (() => {
     const body = el('div', { class: 'form-grid' }, [
       field('Emoji', `<input id="p-emoji" value="${esc(p?.emoji || '🛍️')}" maxlength="8" />`),
       field('Price (USD)', `<input id="p-price" type="number" step="0.01" min="0" value="${p?.price ?? ''}" />`),
+      field('Your cost (USD)', `<input id="p-cost" type="number" step="0.01" min="0" value="${p?.cost ?? 0}" /><span class="hint">What this item costs you. Used for profit only — never shown to customers.</span>`),
       field('Name', `<input id="p-name" value="${esc(p?.name || '')}" />`, true),
       field('Description', `<textarea id="p-desc" placeholder="Shown on the product page">${esc(p?.description || '')}</textarea>`, true),
       field('Uses stock inventory', `<label class="switch"><input type="checkbox" id="p-stock" ${p?.usesStock !== false ? 'checked' : ''}/><span class="track"></span></label><span class="hint">Off = unlimited, delivers fixed content</span>`, true),
@@ -189,6 +230,7 @@ const Views = (() => {
       const payload = {
         name: f('p-name').value.trim(), emoji: f('p-emoji').value.trim() || '🛍️',
         description: f('p-desc').value, price: parseFloat(f('p-price').value),
+        cost: parseFloat(f('p-cost').value) || 0,
         usesStock: f('p-stock').checked, fixedContent: f('p-fixed').value,
         isActive: f('p-active').checked,
       };

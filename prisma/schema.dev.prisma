@@ -49,6 +49,8 @@ model Product {
   emoji        String   @default("🛍️")
   description  String   @default("")
   price        Float
+  // Shop owner's cost per unit — profit reporting only, never shown to buyers.
+  cost         Float    @default(0)
   categoryId   Int?
   isActive     Boolean  @default(true)
   sortOrder    Int      @default(0)
@@ -123,6 +125,8 @@ model OrderItem {
   productName String
   emoji       String @default("🛍️")
   unitPrice   Float
+  // Cost snapshot at purchase time, so historical profit survives cost edits.
+  unitCost    Float  @default(0)
   quantity    Int
   lineTotal   Float
 

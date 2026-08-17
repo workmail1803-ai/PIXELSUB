@@ -15,8 +15,14 @@ async function tick() {
   try {
     await expireStaleOrders();
 
+    // Manually-verified methods have no invoice to reconcile — exclude them all.
+    const manualKeys = [...config.manualMethodKeys];
     const pending = await prisma.order.findMany({
-      where: { status: 'PENDING', invoiceUuid: { not: null }, method: { not: 'BINANCE' } },
+      where: {
+        status: 'PENDING',
+        invoiceUuid: { not: null },
+        ...(manualKeys.length ? { method: { notIn: manualKeys } } : {}),
+      },
       orderBy: { createdAt: 'asc' },
       take: 40, // cap work per tick
     });

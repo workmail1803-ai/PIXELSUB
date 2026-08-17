@@ -61,6 +61,7 @@ export async function createOrder({ user, product, quantity }) {
             productName: product.name,
             emoji: product.emoji,
             unitPrice,
+            unitCost: num(product.cost),
             quantity,
             lineTotal,
           },
@@ -160,8 +161,14 @@ export async function createTopUpOrder({ user, amount }) {
  * No external invoice is created — the customer pays to the admin's Binance ID
  * and then clicks "I've Paid" which notifies admins to verify.
  */
-export async function createBinanceOrder({ user, product, quantity }) {
+export async function createManualOrder({ user, product, quantity, method = 'BINANCE' }) {
   quantity = Math.max(1, Math.floor(Number(quantity) || 1));
+  const m = config.manualMethod(method);
+  if (!m) {
+    const err = new Error('Payment method unavailable');
+    err.code = 'BAD_METHOD';
+    throw err;
+  }
 
   if (product.usesStock) {
     const avail = await availableStock(product.id);
@@ -183,7 +190,7 @@ export async function createBinanceOrder({ user, product, quantity }) {
       publicId,
       userId: user.id,
       status: 'PENDING',
-      method: 'BINANCE',
+      method: m.key,
       amount: lineTotal,
       currency: config.shop.currency,
       expiresAt,
@@ -194,6 +201,7 @@ export async function createBinanceOrder({ user, product, quantity }) {
             productName: product.name,
             emoji: product.emoji,
             unitPrice,
+            unitCost: num(product.cost),
             quantity,
             lineTotal,
           },
@@ -203,18 +211,24 @@ export async function createBinanceOrder({ user, product, quantity }) {
     include: { items: true, user: true },
   });
 
-  await logEvent(order.id, 'created', `${quantity} × ${product.name} (Binance Pay)`);
+  await logEvent(order.id, 'created', `${quantity} × ${product.name} (${m.label})`);
   return { order };
 }
 
 /**
- * Create a wallet top-up order via Binance Pay (manual verification).
+ * Create a wallet top-up order via a manually-verified method.
  */
-export async function createBinanceTopUpOrder({ user, amount }) {
+export async function createManualTopUpOrder({ user, amount, method = 'BINANCE' }) {
   amount = +Number(amount).toFixed(2);
   if (!(amount > 0)) {
     const err = new Error('Invalid amount');
     err.code = 'BAD_AMOUNT';
+    throw err;
+  }
+  const m = config.manualMethod(method);
+  if (!m) {
+    const err = new Error('Payment method unavailable');
+    err.code = 'BAD_METHOD';
     throw err;
   }
   const publicId = shortId('TOP');
@@ -225,33 +239,38 @@ export async function createBinanceTopUpOrder({ user, amount }) {
       publicId,
       userId: user.id,
       status: 'PENDING',
-      method: 'BINANCE',
+      method: m.key,
       kind: 'TOPUP',
       amount,
       currency: config.shop.currency,
       expiresAt,
     },
   });
-  await logEvent(order.id, 'created', `wallet top-up ${money(amount)} (Binance Pay)`);
+  await logEvent(order.id, 'created', `wallet top-up ${money(amount)} (${m.label})`);
   return { order };
 }
+
+// Older names kept so nothing that still imports them breaks.
+export const createBinanceOrder = (args) => createManualOrder({ ...args, method: 'BINANCE' });
+export const createBinanceTopUpOrder = (args) => createManualTopUpOrder({ ...args, method: 'BINANCE' });
 
 /**
  * Notify admins that a customer claims to have paid via Binance.
  */
-export async function notifyBinancePending(order) {
+export async function notifyManualPending(order) {
   const user = await prisma.user.findUnique({ where: { id: order.userId } });
   if (!user) return;
+  const m = config.manualMethod(order.method) || { label: order.method, emoji: '🔔', idLabel: 'ID', payId: '' };
   const name = user.username ? '@' + user.username : (user.firstName || 'User');
   const kindLabel = order.kind === 'TOPUP' ? 'Top-Up' : 'Purchase';
   const text =
-    `🔔 <b>Binance Payment Pending</b>\n\n` +
+    `${m.emoji} <b>${escapeHtml(m.label)} Payment Pending</b>\n\n` +
     `👤 ${escapeHtml(name)} (<code>${user.telegramId}</code>)\n` +
     `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n` +
     `💰 Amount: <b>${money(num(order.amount), order.currency)}</b>\n` +
     `📋 Type: ${kindLabel}\n\n` +
-    `Customer says they paid to Binance ID <code>${config.binance.payId}</code>.\n` +
-    `Please verify the payment in your Binance app.`;
+    `Customer says they paid to ${escapeHtml(m.idLabel)} <code>${escapeHtml(m.payId)}</code>.\n` +
+    `Please verify the payment in your ${escapeHtml(m.label)} app.`;
   const kb = new InlineKeyboard()
     .text('✅ Approve', `a:binok:${order.id}`)
     .text('❌ Decline', `a:binno:${order.id}`);
@@ -302,14 +321,14 @@ async function notifyUnderpaid(order, info, shortfall) {
 /**
  * Admin approves a Binance payment → mark paid and deliver.
  */
-export async function approveBinancePayment(orderId) {
+export async function approveManualPayment(orderId) {
   return markPaidAndDeliver(orderId, { payer_currency: 'BINANCE' });
 }
 
 /**
  * Admin declines a Binance payment → mark order failed.
  */
-export async function declineBinancePayment(orderId) {
+export async function declineManualPayment(orderId) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
   if (!order) return;
   if (['DELIVERED', 'REFUNDED', 'CANCELLED'].includes(order.status)) return;
@@ -385,7 +404,7 @@ export async function payWithBalance({ user, product, quantity }) {
       currency: config.shop.currency,
       paidAt: new Date(),
       items: {
-        create: [{ productId: product.id, productName: product.name, emoji: product.emoji, unitPrice, quantity, lineTotal: total }],
+        create: [{ productId: product.id, productName: product.name, emoji: product.emoji, unitPrice, unitCost: num(product.cost), quantity, lineTotal: total }],
       },
     },
   });
@@ -558,8 +577,9 @@ export async function markPaidAndDeliver(orderId, paymentMeta = {}) {
  * Returns the resolved status string.
  */
 export async function reconcileOrder(order) {
-  // Binance orders are manually verified by admins, not API-checked.
-  if (order.method === 'BINANCE') return order.status;
+  // Manually-verified methods (Binance, Bybit, …) are confirmed by an admin,
+  // never by an API call.
+  if (config.manualMethodKeys.has(order.method)) return order.status;
   if (!order.invoiceUuid && !order.invoiceOrderId) return order.status;
   let info;
   try {
@@ -671,3 +691,8 @@ export async function redeliverOrder(orderId) {
   }
   return fulfillAndDeliver(orderId);
 }
+
+// Older names kept so nothing that still imports them breaks.
+export const approveBinancePayment = approveManualPayment;
+export const declineBinancePayment = declineManualPayment;
+export const notifyBinancePending = notifyManualPending;

@@ -3,8 +3,8 @@ import prisma from '../db.js';
 import config from '../config.js';
 import logger from '../logger.js';
 import { money, num, escapeHtml } from '../utils.js';
-import { createTopUpOrder, createBinanceTopUpOrder, notifyBinancePending } from '../services/orders.js';
-import { payKeyboard, binancePayKeyboard } from './keyboards.js';
+import { createTopUpOrder, createManualTopUpOrder, notifyManualPending } from '../services/orders.js';
+import { payKeyboard, manualPayKeyboard } from './keyboards.js';
 import { sendMessageSafe } from './delivery.js';
 
 const PRESETS = [5, 10, 25, 50, 100];
@@ -52,8 +52,8 @@ function amountKeyboard(prefix, includeCustom = true) {
 }
 
 async function showTopUp(ctx) {
-  const binAvail = Boolean(config.binance.payId);
-  const text = binAvail
+  const hasManual = config.manualMethods.length > 0;
+  const text = hasManual
     ? '💳 <b>Top Up Wallet</b>\n\nChoose an amount, then pick your payment method:'
     : '💳 <b>Top Up Wallet</b>\n\nChoose an amount to add with crypto:';
   await walletSend(ctx, text, amountKeyboard('w:tu'));
@@ -79,27 +79,30 @@ async function startTopUp(ctx, amount) {
   await walletSend(ctx, text, payKeyboard(order));
 }
 
-async function startBinanceTopUp(ctx, amount) {
+async function startManualTopUp(ctx, method, amount) {
+  const m = config.manualMethod(method);
+  if (!m) {
+    return ctx.answerCallbackQuery({ text: 'Payment method unavailable.', show_alert: true }).catch(() => {});
+  }
   await ctx.answerCallbackQuery({ text: 'Creating order…' }).catch(() => {});
   let result;
   try {
-    result = await createBinanceTopUpOrder({ user: ctx.dbUser, amount });
+    result = await createManualTopUpOrder({ user: ctx.dbUser, amount, method: m.key });
   } catch (e) {
-    logger.error({ err: e.message }, 'Binance top-up failed');
+    logger.error({ err: e.message, method: m.key }, 'manual top-up failed');
     return walletSend(ctx, '⚠️ Could not create the top-up order. Please try again shortly.', new InlineKeyboard().text('⬅️ Wallet', 'balance'));
   }
   const { order } = result;
-  const binanceId = config.binance.payId;
   const text =
-    `🟡 <b>Top Up ${money(num(order.amount))} via Binance</b>\n` +
+    `${m.emoji} <b>Top Up ${money(num(order.amount))} via ${escapeHtml(m.label)}</b>\n` +
     `🧾 <code>${escapeHtml(order.publicId)}</code>\n\n` +
-    `📲 <b>Send payment to Binance ID:</b>\n` +
-    `<code>${binanceId}</code>\n\n` +
+    `📲 <b>Send payment to ${escapeHtml(m.idLabel)}:</b>\n` +
+    `<code>${escapeHtml(m.payId)}</code>\n\n` +
     `💵 Amount: <b>${money(num(order.amount))}</b>\n\n` +
     `After sending, tap <b>"I've Paid"</b> below. Your balance updates once admin verifies. ⚡`;
   const kb = new InlineKeyboard()
-    .text('✅ I\'ve Paid — Verify', `binpaid:${order.id}`).row()
-    .text('❌ Cancel', `bincancel:${order.id}`).text('⬅️ Wallet', 'balance');
+    .text('✅ I\'ve Paid — Verify', `mpaid:${order.id}`).row()
+    .text('❌ Cancel', `mcancel:${order.id}`).text('⬅️ Wallet', 'balance');
   await walletSend(ctx, text, kb);
 }
 
@@ -158,28 +161,28 @@ export function registerWalletHandlers(bot) {
   bot.callbackQuery(/^w:tu:(\d+(?:\.\d+)?)$/, async (ctx) => {
     const amount = parseFloat(ctx.match[1]);
     const hasCrypto = Boolean(config.cryptomus.merchantId && config.cryptomus.paymentKey);
-    const hasBinance = Boolean(config.binance.payId);
+    const manual = config.manualMethods;
 
-    // Both available → show method picker
-    if (hasCrypto && hasBinance) {
+    // More than one way to pay → let the customer choose.
+    if ((hasCrypto ? 1 : 0) + manual.length > 1) {
       await ctx.answerCallbackQuery().catch(() => {});
-      const kb = new InlineKeyboard()
-        .text(`💳 Crypto (auto)`, `w:tuc:${amount}`).row()
-        .text(`🟡 Binance (manual)`, `w:bt:${amount}`).row()
-        .text('⬅️ Back', 'w:topup');
+      const kb = new InlineKeyboard();
+      if (hasCrypto) kb.text('💳 Crypto (auto)', `w:tuc:${amount}`).row();
+      for (const m of manual) kb.text(`${m.emoji} ${m.label} (manual)`, `w:mt:${m.key}:${amount}`).row();
+      kb.text('⬅️ Back', 'w:topup');
       await walletSend(ctx, `💳 <b>Top Up ${money(amount)}</b>\n\nChoose your payment method:`, kb);
-    } else if (hasBinance) {
-      // Only Binance → go directly
-      await startBinanceTopUp(ctx, amount);
+    } else if (!hasCrypto && manual.length === 1) {
+      await startManualTopUp(ctx, manual[0].key, amount);
     } else {
-      // Only Cryptomus (or nothing) → try Cryptomus
       await startTopUp(ctx, amount);
     }
   });
   // Direct crypto top-up (after method picker)
   bot.callbackQuery(/^w:tuc:(\d+(?:\.\d+)?)$/, async (ctx) => { await startTopUp(ctx, parseFloat(ctx.match[1])); });
-  // Binance top-up amounts
-  bot.callbackQuery(/^w:bt:(\d+(?:\.\d+)?)$/, async (ctx) => { await startBinanceTopUp(ctx, parseFloat(ctx.match[1])); });
+  // Manual top-up for a specific method
+  bot.callbackQuery(/^w:mt:([A-Z]+):(\d+(?:\.\d+)?)$/, async (ctx) => { await startManualTopUp(ctx, ctx.match[1], parseFloat(ctx.match[2])); });
+  // Legacy Binance-only top-up button still live in older chat messages.
+  bot.callbackQuery(/^w:bt:(\d+(?:\.\d+)?)$/, async (ctx) => { await startManualTopUp(ctx, 'BINANCE', parseFloat(ctx.match[1])); });
   bot.callbackQuery(/^w:rq:(\d+(?:\.\d+)?)$/, async (ctx) => {
     await ctx.answerCallbackQuery({ text: 'Sending request…' }).catch(() => {});
     await createCreditRequest(ctx, parseFloat(ctx.match[1]));

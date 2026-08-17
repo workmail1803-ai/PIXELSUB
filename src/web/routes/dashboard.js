@@ -89,6 +89,35 @@ router.get('/', async (req, res) => {
     .filter((p) => p.stock <= 3)
     .sort((a, b) => a.stock - b.stock);
 
+  // Profit, per product and overall. Top-ups are excluded: they move money into
+  // a wallet rather than selling an item. unitCost is the snapshot taken at
+  // purchase time, so editing a product's cost never rewrites past profit.
+  const soldLines = await prisma.orderItem.findMany({
+    where: { order: { status: { in: paidStatuses.filter((s) => s !== 'REFUNDED') }, kind: 'PURCHASE' } },
+    select: { productId: true, productName: true, emoji: true, quantity: true, lineTotal: true, unitCost: true },
+  });
+
+  const profitByProduct = new Map();
+  let profitRevenue = 0;
+  let profitCost = 0;
+  let linesMissingCost = 0;
+  for (const li of soldLines) {
+    const rev = num(li.lineTotal);
+    const cost = num(li.unitCost) * li.quantity;
+    profitRevenue += rev;
+    profitCost += cost;
+    if (num(li.unitCost) === 0) linesMissingCost++;
+    const key = li.productId ?? `deleted:${li.productName}`;
+    const row = profitByProduct.get(key) || { name: li.productName, emoji: li.emoji, qty: 0, revenue: 0, cost: 0 };
+    row.qty += li.quantity;
+    row.revenue += rev;
+    row.cost += cost;
+    profitByProduct.set(key, row);
+  }
+  const productProfit = [...profitByProduct.values()]
+    .map((r) => ({ ...r, profit: +(r.revenue - r.cost).toFixed(2) }))
+    .sort((a, b) => b.profit - a.profit);
+
   res.json({
     stats: {
       totalUsers,
@@ -99,8 +128,15 @@ router.get('/', async (req, res) => {
       revenue: num(revenueAgg._sum.amount),
       revenueToday: num(revenueTodayAgg._sum.amount),
       productCount,
+      // Product-sale figures only — excludes wallet top-ups.
+      salesRevenue: +profitRevenue.toFixed(2),
+      totalCost: +profitCost.toFixed(2),
+      profit: +(profitRevenue - profitCost).toFixed(2),
+      margin: profitRevenue > 0 ? +(((profitRevenue - profitCost) / profitRevenue) * 100).toFixed(1) : 0,
+      linesMissingCost,
     },
     series: days,
+    productProfit,
     lowStock,
     topProducts: topProductsRaw.map((t) => ({
       name: t.productName,

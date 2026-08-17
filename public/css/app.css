@@ -317,3 +317,7 @@ tbody tr:last-child td { border-bottom: none; }
   .cols-2, .cols-3, .form-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) { .cols-4 { grid-template-columns: 1fr; } }
+
+/* Profit figures in the per-product table */
+.table td.ok { color: #7cf0c3; font-weight: 600; }
+.table td.bad { color: #ff8fa3; font-weight: 600; }
