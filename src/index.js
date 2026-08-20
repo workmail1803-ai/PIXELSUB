@@ -4,6 +4,7 @@ import prisma from './db.js';
 import { startServer } from './web/server.js';
 import { startBot, stopBot } from './bot/index.js';
 import { startPoller, stopPoller } from './payments/poller.js';
+import { verifyAccountMatchesPayId } from './payments/binance.js';
 import { ensureDefaults } from './services/settings.js';
 import { ensureBootstrapAdmin } from './web/auth.js';
 
@@ -35,6 +36,11 @@ async function main() {
 
   // Background payment reconciliation
   startPoller();
+
+  // Confirm the advertised Binance ID is the account our API keys can read.
+  // Deliberately not awaited into the boot path — a slow exchange must never
+  // delay the health check.
+  verifyAccountMatchesPayId().catch(() => {});
 
   logger.info('🎉 TeleBot Shop is up and running');
 }

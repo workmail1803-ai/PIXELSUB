@@ -181,3 +181,35 @@ export async function findPaymentByReference({
   enough.sort((a, b) => Number(a.transactionTime) - Number(b.transactionTime));
   return { tx: enough[0] };
 }
+
+/**
+ * Boot-time sanity check: the Binance ID advertised to customers must be the
+ * same account the API credentials read. If they differ, every payment lands
+ * somewhere the API cannot see and every verification fails with "not found" —
+ * a silent, total failure that looks like customers mistyping their id.
+ *
+ * Never throws: this is a diagnostic, not a gate.
+ */
+export async function verifyAccountMatchesPayId() {
+  if (!isConfigured()) return { checked: false };
+  try {
+    const txs = await recentPayTransactions({ limit: 20 });
+    const incoming = txs.filter((t) => Number(t.amount) > 0);
+    if (!incoming.length) return { checked: false, reason: 'no_incoming_history' };
+
+    const apiAccount = String(incoming[0].uid ?? incoming[0].receiverInfo?.binanceId ?? '');
+    const advertised = String(config.binance.payId);
+    if (apiAccount && apiAccount !== advertised) {
+      logger.error(
+        { advertised, apiAccount },
+        'BINANCE_PAY_ID does not match the account these API keys read — auto-verification will never find a payment'
+      );
+      return { checked: true, match: false, advertised, apiAccount };
+    }
+    logger.info({ account: apiAccount }, 'Binance auto-verify ready');
+    return { checked: true, match: true, apiAccount };
+  } catch (e) {
+    logger.warn({ err: e.message }, 'Binance account check skipped');
+    return { checked: false, reason: 'api_error' };
+  }
+}
