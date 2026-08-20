@@ -98,3 +98,86 @@ export async function findIncomingPayment({
 
   return candidates[0] || null;
 }
+
+/**
+ * Normalise whatever the customer pasted: Binance shows the reference with
+ * spaces in some screens, and people paste it with stray punctuation.
+ */
+function normalizeRef(v) {
+  return String(v || '').trim().replace(/\s+/g, '').replace(/^[#:]+|[.,;]+$/g, '').toUpperCase();
+}
+
+/**
+ * Find the incoming transfer the customer says they sent, by the reference they
+ * gave us. Binance surfaces several identifiers depending on which screen the
+ * payer looks at, so all of them are accepted:
+ *   - transactionId  e.g. P_A22DZ34XBFS71116
+ *   - orderId        e.g. 436520167574593536
+ *   - their own Binance UID (payerInfo.binanceId / counterpartyId)
+ *
+ * A reference alone is not enough to release goods: the transfer must also be
+ * money IN, dated at/after the order, and worth what is owed within tolerance.
+ * Returns { tx } on success or { error } describing precisely what was wrong,
+ * so the customer gets a useful message instead of a generic failure.
+ */
+export async function findPaymentByReference({
+  reference,
+  amount,
+  createdAt,
+  tolerancePct = 2,
+  usedTxIds = new Set(),
+  graceMs = 30 * 60 * 1000,
+}) {
+  const ref = normalizeRef(reference);
+  if (ref.length < 4) return { error: 'ref_too_short' };
+
+  const owed = Number(amount);
+  const since = new Date(createdAt).getTime() - graceMs;
+
+  let txs;
+  try {
+    txs = await recentPayTransactions({ limit: 100, startTime: since });
+  } catch (e) {
+    logger.warn({ err: e.message }, 'binance: history lookup failed');
+    return { error: 'api_error' };
+  }
+
+  const matches = (t) => {
+    const txId = normalizeRef(t.transactionId);
+    const ordId = normalizeRef(t.orderId);
+    if (txId && (txId === ref || ref === txId || txId.includes(ref) || ref.includes(txId))) return true;
+    if (ordId && (ordId === ref || ordId.includes(ref) || ref.includes(ordId))) return true;
+    // Numeric reference could be the payer's own Binance UID.
+    if (/^\d{6,}$/.test(ref)) {
+      if (String(t.payerInfo?.binanceId || '') === ref) return true;
+      if (String(t.counterpartyId || '') === ref) return true;
+    }
+    return false;
+  };
+
+  const found = txs.filter(matches);
+  if (!found.length) return { error: 'not_found' };
+
+  // Report the most specific problem rather than a blanket "no".
+  const incoming = found.filter((t) => Number(t.amount) > 0);
+  if (!incoming.length) return { error: 'not_incoming' };
+
+  const unclaimed = incoming.filter((t) => !usedTxIds.has(String(t.transactionId)));
+  if (!unclaimed.length) return { error: 'already_used' };
+
+  const inWindow = unclaimed.filter((t) => Number(t.transactionTime) >= since);
+  if (!inWindow.length) return { error: 'too_old' };
+
+  const enough = inWindow.filter((t) => {
+    const got = Number(t.amount);
+    if (!Number.isFinite(got)) return false;
+    if (got >= owed) return true;
+    return ((owed - got) / owed) * 100 <= tolerancePct;
+  });
+  if (!enough.length) {
+    return { error: 'wrong_amount', tx: inWindow[0], owed };
+  }
+
+  enough.sort((a, b) => Number(a.transactionTime) - Number(b.transactionTime));
+  return { tx: enough[0] };
+}

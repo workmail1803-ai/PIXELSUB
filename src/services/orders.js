@@ -281,6 +281,68 @@ export async function notifyManualPending(order) {
 }
 
 /**
+ * Settle a Binance order from the transaction reference the customer supplied.
+ *
+ * The reference identifies WHICH transfer they mean; it never authorises
+ * delivery on its own. The transfer must independently prove itself: money in,
+ * dated at/after the order, worth what is owed, and not already spent on
+ * another order. Order.externalTxId is UNIQUE, so even a perfect race loses at
+ * the database rather than delivering twice.
+ *
+ * Returns { ok: true, tx } or { ok: false, reason, tx? } — reasons are specific
+ * so the customer can be told exactly what to fix.
+ */
+export async function verifyBinanceByReference(order, reference) {
+  if (order.method !== 'BINANCE') return { ok: false, reason: 'not_binance' };
+  if (order.status !== 'PENDING') return { ok: false, reason: 'not_pending' };
+  if (!binance.isConfigured()) return { ok: false, reason: 'not_configured' };
+
+  const claimed = await prisma.order.findMany({
+    where: { externalTxId: { not: null } },
+    select: { externalTxId: true },
+  });
+
+  const res = await binance.findPaymentByReference({
+    reference,
+    amount: num(order.amount),
+    createdAt: order.createdAt,
+    tolerancePct: config.binance.tolerancePct,
+    usedTxIds: new Set(claimed.map((c) => c.externalTxId)),
+  });
+
+  if (res.error) {
+    logger.info({ order: order.publicId, reason: res.error }, 'binance reference not accepted');
+    return { ok: false, reason: res.error, tx: res.tx, owed: res.owed };
+  }
+
+  const tx = res.tx;
+  // Claim first: the unique constraint is the real lock against double-spend.
+  try {
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { externalTxId: String(tx.transactionId) },
+    });
+  } catch (e) {
+    logger.warn({ err: e.message, order: order.publicId, tx: tx.transactionId }, 'binance tx already claimed');
+    return { ok: false, reason: 'already_used' };
+  }
+
+  const payer = tx.payerInfo?.binanceId ? ` from ${tx.payerInfo.binanceId}` : '';
+  await logEvent(
+    order.id,
+    'payment_received',
+    `Binance Pay ${tx.amount} ${tx.currency}${payer} · tx ${tx.transactionId} (verified from customer reference)`
+  );
+  await markPaidAndDeliver(order.id, {
+    payer_currency: tx.currency,
+    payer_amount: String(tx.amount),
+    network: 'Binance Pay',
+  });
+  logger.info({ order: order.publicId, tx: tx.transactionId }, 'binance payment verified by reference');
+  return { ok: true, tx };
+}
+
+/**
  * Try to settle a pending Binance order automatically by finding the matching
  * incoming Binance Pay transfer.
  *

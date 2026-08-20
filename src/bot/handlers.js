@@ -3,7 +3,7 @@ import logger from '../logger.js';
 import config from '../config.js';
 import { money, num, escapeHtml } from '../utils.js';
 import { getSetting, render } from '../services/settings.js';
-import { createOrder, createManualOrder, notifyManualPending, reconcileOrder, payWithBalance, tryAutoVerifyBinance } from '../services/orders.js';
+import { createOrder, createManualOrder, notifyManualPending, reconcileOrder, payWithBalance, verifyBinanceByReference } from '../services/orders.js';
 import { showWallet, handleWalletText, clearWalletState } from './wallet.js';
 import {
   mainMenuKeyboard,
@@ -63,6 +63,7 @@ async function getProductWithStock(id) {
 
 async function showMainMenu(ctx) {
   clearWalletState(ctx.from.id);
+  clearTxPrompt(ctx.from.id);
   // Admins get their control panel straight from /start.
   if (ctx.isAdmin) return showAdminMenu(ctx);
   const shopName = await getSetting('shop_name');
@@ -234,6 +235,10 @@ async function doManualCheckout(ctx, method, productId, qty) {
   await smartSend(ctx, text, manualPayKeyboard(order));
 }
 
+// Customers awaiting a transaction id: telegram id -> order id.
+const txPrompt = new Map();
+export function clearTxPrompt(id) { txPrompt.delete(String(id)); }
+
 async function doManualPaid(ctx, orderId) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
   if (!order || order.userId !== ctx.dbUser.id) {
@@ -243,50 +248,38 @@ async function doManualPaid(ctx, orderId) {
     return ctx.answerCallbackQuery({ text: `Order is already ${order.status.toLowerCase()}.`, show_alert: true }).catch(() => {});
   }
 
-  // Binance transfers can be confirmed against the exchange straight away.
-  // Anything else (or an API hiccup) falls through to admin verification.
-  await ctx.answerCallbackQuery({ text: 'Checking your payment…' }).catch(() => {});
-  const auto = await tryAutoVerifyBinance(order);
+  const m = config.manualMethod(order.method);
+  const canAutoVerify = order.method === 'BINANCE' && binanceApiReady();
 
-  if (auto.matched) {
+  // Binance can be checked against the exchange, so ask for the reference.
+  if (canAutoVerify) {
+    txPrompt.set(String(ctx.from.id), order.id);
+    await ctx.answerCallbackQuery().catch(() => {});
     return smartSend(
       ctx,
-      `✅ <b>Payment confirmed automatically!</b>
+      `🧾 <b>Send your Transaction ID</b>
 
 ` +
-      `🧾 Order: <b>${escapeHtml(order.publicId)}</b>
-` +
-      `💵 Received: <b>${escapeHtml(String(auto.tx.amount))} ${escapeHtml(auto.tx.currency)}</b>
+      `Order: <b>${escapeHtml(order.publicId)}</b> · ${money(num(order.amount), order.currency)}
 
 ` +
-      `Your items have been delivered above. Thank you! 🎁`,
-      backMenuKeyboard().text('🛍️ Shop', 'shop')
+      `Open the payment in your Binance app and copy the <b>Transaction ID</b> or <b>Order ID</b>, then send it here as a message.
+
+` +
+      `<i>It looks like</i> <code>P_A22DZ34XBFS71116</code> <i>or</i> <code>436520167574593536</code>
+
+` +
+      `⚡ We'll verify it instantly and deliver your items.`,
+      backMenuKeyboard().text('❌ Cancel', `mcancel:${order.id}`)
     );
   }
 
-  // Not found yet — tell the customer plainly and let them re-check, while an
-  // admin is notified so a genuine payment never sits unnoticed.
+  // Everything else (Bybit) still goes to a human.
+  await ctx.answerCallbackQuery({ text: 'Notifying admin…' }).catch(() => {});
   await notifyManualPending(order);
-
-  const canRecheck = auto.reason === 'no_match' || auto.reason === 'api_error';
-  const body =
-    auto.reason === 'no_match'
-      ? `We couldn't find your transfer yet. If you've just sent it, wait a few seconds and tap <b>Check Again</b>.
-
-` +
-        `Our admin has also been notified and will confirm it manually if needed. ⚡`
-      : `Our admin is checking your payment now. You'll receive your items here as soon as it's confirmed. ⚡
-
-` +
-        `Usually takes just a few minutes. 🕐`;
-
-  const kb = canRecheck
-    ? backMenuKeyboard().text('🔄 Check Again', `mpaid:${order.id}`)
-    : backMenuKeyboard().text('🛍️ Shop', 'shop');
-
   await smartSend(
     ctx,
-    `⏳ <b>Payment submitted</b>
+    `✅ <b>Payment submitted for verification!</b>
 
 ` +
     `🧾 Order: <b>${escapeHtml(order.publicId)}</b>
@@ -294,12 +287,121 @@ async function doManualPaid(ctx, orderId) {
     `💵 Amount: <b>${money(num(order.amount), order.currency)}</b>
 
 ` +
-    body,
-    kb
+    `Our admin is checking your ${escapeHtml(m?.label || 'payment')} now. You'll receive your items here as soon as it's confirmed. ⚡
+
+` +
+    `Usually takes just a few minutes. 🕐`,
+    backMenuKeyboard().text('🛍️ Shop', 'shop')
   );
 }
 
+function binanceApiReady() {
+  return Boolean(config.binance.apiKey && config.binance.apiSecret && config.binance.payId);
+}
+
+// Handle a transaction id sent while an order is awaiting one. Returns true if consumed.
+async function handleTxReference(ctx) {
+  const orderId = txPrompt.get(String(ctx.from.id));
+  if (!orderId) return false;
+  // A slash command is never a transaction id — drop the prompt and let the
+  // command run, so a customer can never get stuck in this state.
+  if (String(ctx.message.text || '').startsWith('/')) { clearTxPrompt(ctx.from.id); return false; }
+
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order || order.userId !== ctx.dbUser.id) { clearTxPrompt(ctx.from.id); return false; }
+  if (order.status !== 'PENDING') {
+    clearTxPrompt(ctx.from.id);
+    await ctx.reply(`This order is already ${order.status.toLowerCase()}.`, { reply_markup: backMenuKeyboard() });
+    return true;
+  }
+
+  const reference = String(ctx.message.text || '').trim();
+  const checking = await ctx.reply('🔍 Checking your payment on Binance…').catch(() => null);
+
+  let res;
+  try {
+    res = await verifyBinanceByReference(order, reference);
+  } catch (e) {
+    logger.error({ err: e.message, order: order.publicId }, 'binance reference verification crashed');
+    res = { ok: false, reason: 'api_error' };
+  }
+  if (checking) await ctx.api.deleteMessage(ctx.chat.id, checking.message_id).catch(() => {});
+
+  if (res.ok) {
+    clearTxPrompt(ctx.from.id);
+    await ctx.reply(
+      `✅ <b>Payment confirmed!</b>
+
+` +
+      `🧾 Order: <b>${escapeHtml(order.publicId)}</b>
+` +
+      `💵 Received: <b>${escapeHtml(String(res.tx.amount))} ${escapeHtml(res.tx.currency)}</b>
+
+` +
+      `Your items have been delivered above. Thank you! 🎁`,
+      { parse_mode: 'HTML', reply_markup: backMenuKeyboard().text('🛍️ Shop', 'shop') }
+    );
+    return true;
+  }
+
+  const owed = money(num(order.amount), order.currency);
+  const messages = {
+    not_found:
+      `❌ <b>We couldn't find that transaction.</b>
+
+` +
+      `Please double-check the ID and send it again. Copy it directly from the payment details in your Binance app.
+
+` +
+      `If you paid only a moment ago, wait ~30 seconds and try once more.`,
+    wrong_amount:
+      `⚠️ <b>Amount doesn't match.</b>
+
+` +
+      `That transfer was <b>${escapeHtml(String(res.tx?.amount ?? '?'))} ${escapeHtml(String(res.tx?.currency ?? ''))}</b>, ` +
+      `but this order is for <b>${owed}</b>.
+
+` +
+      `Send the correct transaction ID, or contact support if you believe this is an error.`,
+    already_used:
+      `⚠️ <b>That transaction was already used</b> for another order.
+
+` +
+      `Each payment can only be applied once. Please send the ID of the payment for <b>this</b> order.`,
+    not_incoming:
+      `⚠️ That looks like a payment <b>you received</b>, not one you sent to us.
+
+Please send the ID of your payment to us.`,
+    too_old:
+      `⚠️ <b>That transfer is older than this order.</b>
+
+Please send the ID of the payment you made for <b>${escapeHtml(order.publicId)}</b>.`,
+    ref_too_short: `⚠️ That doesn't look like a transaction ID. Please copy the full ID from your Binance app.`,
+  };
+
+  if (res.reason === 'api_error' || res.reason === 'not_configured') {
+    // Our problem, not theirs — hand it to a human so nobody is left stranded.
+    clearTxPrompt(ctx.from.id);
+    await notifyManualPending(order);
+    await ctx.reply(
+      `⏳ <b>We couldn't reach Binance right now.</b>
+
+` +
+      `Don't worry — our team has been notified and will confirm your payment manually. You'll get your items here shortly. 🙏`,
+      { parse_mode: 'HTML', reply_markup: supportKeyboard() }
+    );
+    return true;
+  }
+
+  await ctx.reply(messages[res.reason] || messages.not_found, {
+    parse_mode: 'HTML',
+    reply_markup: backMenuKeyboard().text('💬 Support', 'support'),
+  });
+  return true;
+}
+
 async function doManualCancel(ctx, orderId) {
+  clearTxPrompt(ctx.from.id);
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order || order.userId !== ctx.dbUser.id) {
     return ctx.answerCallbackQuery({ text: 'Order not found.', show_alert: true }).catch(() => {});
@@ -494,6 +596,7 @@ export function registerHandlers(bot) {
 
   // Fallback for any stray text: wallet custom-amount entry, else show the menu.
   bot.on('message:text', async (ctx) => {
+    if (await handleTxReference(ctx)) return;
     if (ctx.message.text?.startsWith('/')) return; // unknown command
     if (await handleWalletText(ctx)) return;
     await showMainMenu(ctx);
