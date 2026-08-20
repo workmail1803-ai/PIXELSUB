@@ -3,7 +3,7 @@ import logger from '../logger.js';
 import config from '../config.js';
 import { money, num, escapeHtml } from '../utils.js';
 import { getSetting, render } from '../services/settings.js';
-import { createOrder, createManualOrder, notifyManualPending, reconcileOrder, payWithBalance } from '../services/orders.js';
+import { createOrder, createManualOrder, notifyManualPending, reconcileOrder, payWithBalance, tryAutoVerifyBinance } from '../services/orders.js';
 import { showWallet, handleWalletText, clearWalletState } from './wallet.js';
 import {
   mainMenuKeyboard,
@@ -243,17 +243,59 @@ async function doManualPaid(ctx, orderId) {
     return ctx.answerCallbackQuery({ text: `Order is already ${order.status.toLowerCase()}.`, show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCallbackQuery({ text: 'Notifying admin…' }).catch(() => {});
+  // Binance transfers can be confirmed against the exchange straight away.
+  // Anything else (or an API hiccup) falls through to admin verification.
+  await ctx.answerCallbackQuery({ text: 'Checking your payment…' }).catch(() => {});
+  const auto = await tryAutoVerifyBinance(order);
+
+  if (auto.matched) {
+    return smartSend(
+      ctx,
+      `✅ <b>Payment confirmed automatically!</b>
+
+` +
+      `🧾 Order: <b>${escapeHtml(order.publicId)}</b>
+` +
+      `💵 Received: <b>${escapeHtml(String(auto.tx.amount))} ${escapeHtml(auto.tx.currency)}</b>
+
+` +
+      `Your items have been delivered above. Thank you! 🎁`,
+      backMenuKeyboard().text('🛍️ Shop', 'shop')
+    );
+  }
+
+  // Not found yet — tell the customer plainly and let them re-check, while an
+  // admin is notified so a genuine payment never sits unnoticed.
   await notifyManualPending(order);
+
+  const canRecheck = auto.reason === 'no_match' || auto.reason === 'api_error';
+  const body =
+    auto.reason === 'no_match'
+      ? `We couldn't find your transfer yet. If you've just sent it, wait a few seconds and tap <b>Check Again</b>.
+
+` +
+        `Our admin has also been notified and will confirm it manually if needed. ⚡`
+      : `Our admin is checking your payment now. You'll receive your items here as soon as it's confirmed. ⚡
+
+` +
+        `Usually takes just a few minutes. 🕐`;
+
+  const kb = canRecheck
+    ? backMenuKeyboard().text('🔄 Check Again', `mpaid:${order.id}`)
+    : backMenuKeyboard().text('🛍️ Shop', 'shop');
 
   await smartSend(
     ctx,
-    `✅ <b>Payment submitted for verification!</b>\n\n` +
-    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n` +
-    `💵 Amount: <b>${money(num(order.amount), order.currency)}</b>\n\n` +
-    `Our admin is checking your payment now. You'll receive your items here as soon as it's confirmed. ⚡\n\n` +
-    `Usually takes just a few minutes. 🕐`,
-    backMenuKeyboard().text('🛍️ Shop', 'shop')
+    `⏳ <b>Payment submitted</b>
+
+` +
+    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>
+` +
+    `💵 Amount: <b>${money(num(order.amount), order.currency)}</b>
+
+` +
+    body,
+    kb
   );
 }
 

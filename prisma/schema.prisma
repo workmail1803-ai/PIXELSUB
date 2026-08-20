@@ -131,6 +131,9 @@ model Order {
   // Cryptomus linkage
   invoiceUuid    String?       // Cryptomus payment uuid
   invoiceOrderId String?       @unique // order_id we send to Cryptomus
+  // Exchange transaction id (e.g. Binance Pay) matched to this order. Unique so
+  // one incoming payment can never be used to settle two different orders.
+  externalTxId   String?       @unique
   payUrl         String?       // hosted checkout url
   payCurrency    String?       // crypto the user actually paid in
   payAmount      String?       // crypto amount

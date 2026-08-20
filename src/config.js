@@ -68,6 +68,13 @@ const config = {
 
   binance: {
     payId: (process.env.BINANCE_PAY_ID || '').trim(),
+    // Read-only API credentials used to auto-verify incoming Binance Pay
+    // transfers. Must have ONLY "Enable Reading" — never withdrawals.
+    apiKey: (process.env.BINANCE_API_KEY || '').trim(),
+    apiSecret: (process.env.BINANCE_API_SECRET || '').trim(),
+    // How far under the invoiced amount an incoming transfer may land and
+    // still be accepted (exchange-rate drift on round USDT sends).
+    tolerancePct: float('BINANCE_MATCH_TOLERANCE_PCT', 2),
   },
 
   // Payment methods verified by hand: the customer sends funds straight to the

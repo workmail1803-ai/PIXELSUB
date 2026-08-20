@@ -96,6 +96,8 @@ model Order {
 
   invoiceUuid    String?
   invoiceOrderId String?   @unique
+  // Exchange transaction id matched to this order; unique to stop double-spend.
+  externalTxId   String?   @unique
   payUrl         String?
   payCurrency    String?
   payAmount      String?

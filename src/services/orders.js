@@ -3,6 +3,7 @@ import logger from '../logger.js';
 import config from '../config.js';
 import { shortId, invoiceOrderId, num } from '../utils.js';
 import * as cryptomus from '../payments/cryptomus.js';
+import * as binance from '../payments/binance.js';
 import { sendDelivery, sendOutOfStockApology, notifyAdmins, sendMessageSafe } from '../bot/delivery.js';
 import { render } from './settings.js';
 import { money, escapeHtml } from '../utils.js';
@@ -277,6 +278,71 @@ export async function notifyManualPending(order) {
   for (const id of config.telegram.adminIds) {
     await sendMessageSafe(id, text, { reply_markup: kb });
   }
+}
+
+/**
+ * Try to settle a pending Binance order automatically by finding the matching
+ * incoming Binance Pay transfer.
+ *
+ * Binance Pay carries no order reference, so a transfer is matched on amount +
+ * time window. Two safeguards stop that being loose:
+ *   1. transaction ids already attached to other orders are excluded, and
+ *   2. Order.externalTxId is UNIQUE, so if two requests race for the same
+ *      transfer the database rejects the second one.
+ *
+ * Returns { matched: true, tx } on success, or { matched: false, reason }.
+ * Never throws to the caller — a Binance outage falls back to admin approval.
+ */
+export async function tryAutoVerifyBinance(order) {
+  if (order.method !== 'BINANCE') return { matched: false, reason: 'not_binance' };
+  if (order.status !== 'PENDING') return { matched: false, reason: 'not_pending' };
+  if (!binance.isConfigured()) return { matched: false, reason: 'not_configured' };
+
+  let tx;
+  try {
+    const claimed = await prisma.order.findMany({
+      where: { externalTxId: { not: null } },
+      select: { externalTxId: true },
+    });
+    tx = await binance.findIncomingPayment({
+      amount: num(order.amount),
+      createdAt: order.createdAt,
+      tolerancePct: config.binance.tolerancePct,
+      usedTxIds: new Set(claimed.map((c) => c.externalTxId)),
+    });
+  } catch (e) {
+    logger.warn({ err: e.message, order: order.publicId }, 'binance auto-verify unavailable');
+    return { matched: false, reason: 'api_error' };
+  }
+
+  if (!tx) return { matched: false, reason: 'no_match' };
+
+  // Claim the transfer first. The unique constraint is the real lock: if another
+  // order grabbed this transfer a moment ago, this write fails and we bail out
+  // rather than delivering twice against one payment.
+  try {
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { externalTxId: String(tx.transactionId) },
+    });
+  } catch (e) {
+    logger.warn({ err: e.message, order: order.publicId, tx: tx.transactionId }, 'binance tx already claimed');
+    return { matched: false, reason: 'tx_claimed' };
+  }
+
+  const payer = tx.payerInfo?.binanceId ? ` from ${tx.payerInfo.binanceId}` : '';
+  await logEvent(
+    order.id,
+    'payment_received',
+    `Binance Pay ${tx.amount} ${tx.currency}${payer} · tx ${tx.transactionId} (auto-verified)`
+  );
+  await markPaidAndDeliver(order.id, {
+    payer_currency: tx.currency,
+    payer_amount: String(tx.amount),
+    network: 'Binance Pay',
+  });
+  logger.info({ order: order.publicId, tx: tx.transactionId }, 'binance payment auto-verified');
+  return { matched: true, tx };
 }
 
 /**
