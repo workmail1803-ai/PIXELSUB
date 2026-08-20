@@ -13,3 +13,6 @@ prisma/.pg-migrate.prisma
 coverage/
 .vscode/
 .idea/
+
+# Database dumps — contain customer data and delivered codes. Never commit.
+backup-railway-*.json

@@ -95,13 +95,14 @@ async function startManualTopUp(ctx, method, amount) {
   const { order } = result;
   const text =
     `${m.emoji} <b>Top Up ${money(num(order.amount))} via ${escapeHtml(m.label)}</b>\n` +
-    `🧾 <code>${escapeHtml(order.publicId)}</code>\n\n` +
-    `📲 <b>Send payment to ${escapeHtml(m.idLabel)}:</b>\n` +
-    `<code>${escapeHtml(m.payId)}</code>\n\n` +
-    `💵 Amount: <b>${money(num(order.amount))}</b>\n\n` +
-    `After sending, tap <b>"I've Paid"</b> below. Your balance updates once admin verifies. ⚡`;
+    `━━━━━━━━━━━━━━━\n\n` +
+    `💵 Send exactly: <b>${money(num(order.amount))}</b>\n` +
+    `🆔 ${escapeHtml(m.idLabel)}: <code>${escapeHtml(m.payId)}</code>\n` +
+    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n\n` +
+    `After sending, tap <b>"I've Paid"</b> below. Your balance is credited once ` +
+    `our team verifies it. ⚡`;
   const kb = new InlineKeyboard()
-    .text('✅ I\'ve Paid — Verify', `mpaid:${order.id}`).row()
+    .text("✅ I've Paid — Notify Admin", `mpaid:${order.id}`).row()
     .text('❌ Cancel', `mcancel:${order.id}`).text('⬅️ Wallet', 'balance');
   await walletSend(ctx, text, kb);
 }

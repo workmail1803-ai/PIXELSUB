@@ -176,8 +176,20 @@ async function doCheckout(ctx, productId, qty) {
     `🧾 <b>Order ${escapeHtml(order.publicId)}</b>\n\n` +
     `${escapeHtml(product.emoji)} ${escapeHtml(product.name)} ×${qty}\n` +
     `💵 <b>Amount:</b> ${money(num(order.amount), order.currency)}\n\n` +
-    `💎 Tap <b>Pay Now</b> to pay with crypto (USDT, BTC, ETH, TRX & more).\n` +
-    `⚡ Payment is detected <b>automatically</b> — your items arrive here the moment it confirms.\n` +
+    `💎 Tap <b>Pay Now</b> to pay with crypto (USDT, BTC, ETH, TRX & more).
+
+` +
+    `━━━━━━━━━━━━━━━
+` +
+    `⚡ <b>AUTOMATIC VERIFICATION</b>
+` +
+    `━━━━━━━━━━━━━━━
+
+` +
+    `🤖 Nothing else to do — we detect your payment <b>automatically</b> the moment it` +
+    ` confirms on the blockchain, and your items arrive here in seconds. ✅
+
+` +
     `⏱️ This invoice expires in ${config.shop.orderExpiryMin} minutes.`;
 
   await smartSend(ctx, text, payKeyboard(order));
@@ -215,24 +227,35 @@ async function doManualCheckout(ctx, method, productId, qty) {
   }
 
   const { order } = result;
-  const text =
-    `${m.emoji} <b>Pay with ${escapeHtml(m.label)}</b>\n\n` +
-    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n` +
-    `${escapeHtml(product.emoji)} ${escapeHtml(product.name)} ×${qty}\n` +
-    `💵 <b>Amount:</b> ${money(num(order.amount), order.currency)}\n\n` +
-    `━━━━━━━━━━━━━━━\n` +
-    `📲 <b>Send payment to this ${escapeHtml(m.idLabel)}:</b>\n` +
-    `<code>${escapeHtml(m.payId)}</code>\n` +
-    `━━━━━━━━━━━━━━━\n\n` +
-    `💡 <b>How to pay:</b>\n` +
-    `1️⃣ Open the ${escapeHtml(m.label)} app\n` +
-    `2️⃣ Go to <b>Pay</b> → <b>Send</b>\n` +
-    `3️⃣ Enter ${escapeHtml(m.idLabel)}: <code>${escapeHtml(m.payId)}</code>\n` +
-    `4️⃣ Send <b>${money(num(order.amount), order.currency)}</b>\n` +
-    `5️⃣ Tap <b>"I've Paid"</b> below\n\n` +
-    `⏱️ This order expires in ${config.shop.orderExpiryMin} minutes.`;
+  const auto = m.key === 'BINANCE' && binanceApiReady();
 
-  await smartSend(ctx, text, manualPayKeyboard(order));
+  if (auto) {
+    // Arm the transaction-id prompt now, so the customer can just paste it
+    // after paying instead of pressing another button first.
+    txPrompt.set(String(ctx.from.id), order.id);
+  }
+
+  const text =
+    `${m.emoji} <b>Pay via ${escapeHtml(m.label)}</b>\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `🛍️ Item: <b>${escapeHtml(product.name)}</b>${qty > 1 ? ` ×${qty}` : ''}\n` +
+    `💵 Send exactly: <b>${money(num(order.amount), order.currency)}</b>\n` +
+    `🆔 ${escapeHtml(m.idLabel)}: <code>${escapeHtml(m.payId)}</code>\n` +
+    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n\n` +
+    `⏰ This payment session expires in ${config.shop.orderExpiryMin} minutes.\n\n` +
+    (auto
+      ? `━━━━━━━━━━━━━━━\n` +
+        `⚡ <b>AUTOMATIC VERIFICATION</b>\n` +
+        `━━━━━━━━━━━━━━━\n\n` +
+        `After paying, open the payment in your ${escapeHtml(m.label)} app, copy the ` +
+        `<b>Transaction ID</b> (or Order ID), and <b>send it here as a message</b>.\n\n` +
+        `<i>Example:</i> <code>436520167574593536</code>\n\n` +
+        `🤖 We check it with ${escapeHtml(m.label)} instantly and deliver your items in ` +
+        `seconds — no waiting for staff. ✅`
+      : `After sending, tap <b>"I've Paid"</b> below. Our team verifies it and your ` +
+        `items arrive here shortly. ⚡`);
+
+  await smartSend(ctx, text, manualPayKeyboard(order, { autoVerify: auto }));
 }
 
 // Customers awaiting a transaction id: telegram id -> order id.
