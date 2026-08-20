@@ -100,6 +100,13 @@ const config = {
   },
 };
 
+// True when Binance transfers can be confirmed against the exchange, which is
+// what lets the UI advertise "(Auto)" instead of promising a human will check.
+config.binanceAutoVerify = Boolean(
+  config.binance.apiKey && config.binance.apiSecret && config.binance.payId
+);
+config.cryptoAutoVerify = Boolean(config.cryptomus.merchantId && config.cryptomus.paymentKey);
+
 // Fast lookups for the manual methods above.
 config.manualMethodKeys = new Set(config.manualMethods.map((m) => m.key));
 config.manualMethod = (key) => config.manualMethods.find((m) => m.key === key) || null;

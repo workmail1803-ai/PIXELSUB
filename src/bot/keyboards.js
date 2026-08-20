@@ -38,13 +38,18 @@ export function productKeyboard(product, qty, maxQty, opts = {}) {
     .text(canInc ? '➕' : ' ', canInc ? `q:${product.id}:${qty + 1}` : 'noop')
     .row();
   const total = num(product.price) * qty;
-  // Only show Crypto when Cryptomus is fully configured
+  // Only show Crypto when Cryptomus is fully configured. "(Auto)" is not
+  // decoration — it appears only where payment truly confirms itself.
   if (cryptomusConfigured()) {
-    kb.text(`💳 Pay ${money(total)} with Crypto`, `checkout:${product.id}:${qty}`).row();
+    kb.text(`💎 Pay ${money(total)} with Crypto ⚡ (Auto)`, `checkout:${product.id}:${qty}`).row();
   }
   // One button per manually-verified method (Binance, Bybit, …).
   for (const m of config.manualMethods) {
-    kb.text(`${m.emoji} Pay ${money(total)} with ${m.label}`, `mchk:${m.key}:${product.id}:${qty}`).row();
+    const auto = m.key === 'BINANCE' && config.binanceAutoVerify;
+    const label = auto
+      ? `${m.emoji} Pay ${money(total)} with ${m.label} ⚡ (Auto)`
+      : `${m.emoji} Pay ${money(total)} with ${m.label}`;
+    kb.text(label, `mchk:${m.key}:${product.id}:${qty}`).row();
   }
   // Offer wallet payment when the customer has enough balance.
   if (opts.balance !== undefined && opts.balance >= total) {
@@ -55,9 +60,17 @@ export function productKeyboard(product, qty, maxQty, opts = {}) {
 }
 
 // Shown after a manually-verified order is created.
-export function manualPayKeyboard(order) {
+export function manualPayKeyboard(order, { autoVerify = false, payId = '', idLabel = 'ID' } = {}) {
   const kb = new InlineKeyboard();
-  kb.text('✅ I\'ve Paid — Verify', `mpaid:${order.id}`).row();
+  // Telegram's copy_text button puts the id straight on the clipboard, so the
+  // customer never has to select it by hand on a phone.
+  if (payId) kb.copyText(`📋 Copy ${idLabel}`, String(payId)).row();
+  if (autoVerify) {
+    // The prompt is already armed — this only re-arms it if they navigated away.
+    kb.text('🧾 Paste Transaction ID', `mpaid:${order.id}`).row();
+  } else {
+    kb.text("✅ I've Paid — Notify Admin", `mpaid:${order.id}`).row();
+  }
   kb.text('❌ Cancel Order', `mcancel:${order.id}`).text('🏠 Menu', 'menu');
   return kb;
 }
@@ -69,7 +82,7 @@ export const binancePayKeyboard = manualPayKeyboard;
 export function payKeyboard(order) {
   const kb = new InlineKeyboard();
   if (order.payUrl) kb.url('💎 Pay Now', order.payUrl).row();
-  kb.text('✅ I\'ve Paid — Check Status', `check:${order.id}`).row();
+  kb.text('🔄 Check Payment Status', `check:${order.id}`).row();
   kb.text('❌ Cancel Order', `cancel:${order.id}`).text('🏠 Menu', 'menu');
   return kb;
 }
@@ -88,7 +101,7 @@ export function orderDetailKeyboard(order) {
   const kb = new InlineKeyboard();
   if (order.status === 'PENDING' && order.payUrl) {
     kb.url('💎 Pay Now', order.payUrl).row();
-    kb.text('✅ Check Status', `check:${order.id}`).row();
+  kb.text('🔄 Check Payment Status', `check:${order.id}`).row();
   }
   kb.text('⬅️ My Orders', 'orders').text('🏠 Menu', 'menu');
   return kb;

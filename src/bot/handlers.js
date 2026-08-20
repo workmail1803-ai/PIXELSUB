@@ -173,7 +173,9 @@ async function doCheckout(ctx, productId, qty) {
 
   const { order } = result;
   const text =
-    `🧾 <b>Order ${escapeHtml(order.publicId)}</b>\n\n` +
+    `💎 <b>Pay with Crypto ⚡ (Auto)</b>\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `🧾 Order: <b>${escapeHtml(order.publicId)}</b>\n` +
     `${escapeHtml(product.emoji)} ${escapeHtml(product.name)} ×${qty}\n` +
     `💵 <b>Amount:</b> ${money(num(order.amount), order.currency)}\n\n` +
     `💎 Tap <b>Pay Now</b> to pay with crypto (USDT, BTC, ETH, TRX & more).
@@ -236,7 +238,7 @@ async function doManualCheckout(ctx, method, productId, qty) {
   }
 
   const text =
-    `${m.emoji} <b>Pay via ${escapeHtml(m.label)}</b>\n` +
+    `${m.emoji} <b>Pay via ${escapeHtml(m.label)}${auto ? ' ⚡ (Auto)' : ''}</b>\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `🛍️ Item: <b>${escapeHtml(product.name)}</b>${qty > 1 ? ` ×${qty}` : ''}\n` +
     `💵 Send exactly: <b>${money(num(order.amount), order.currency)}</b>\n` +
@@ -255,7 +257,7 @@ async function doManualCheckout(ctx, method, productId, qty) {
       : `After sending, tap <b>"I've Paid"</b> below. Our team verifies it and your ` +
         `items arrive here shortly. ⚡`);
 
-  await smartSend(ctx, text, manualPayKeyboard(order, { autoVerify: auto }));
+  await smartSend(ctx, text, manualPayKeyboard(order, { autoVerify: auto, payId: m.payId, idLabel: m.idLabel }));
 }
 
 // Customers awaiting a transaction id: telegram id -> order id.
