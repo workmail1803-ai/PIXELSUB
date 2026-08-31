@@ -17,9 +17,7 @@
     "dev": "node --watch src/index.js",
     "dev:setup": "prisma generate --schema=prisma/schema.dev.prisma && prisma db push --schema=prisma/schema.dev.prisma --skip-generate",
     "dev:seed": "node scripts/seed.js --with-demo-stock",
-    "prod:generate": "prisma generate",
-    "backup:export": "node scripts/export-backup.mjs",
-    "backup:import": "node scripts/import-backup.mjs"
+    "prod:generate": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

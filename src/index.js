@@ -7,7 +7,6 @@ import { startPoller, stopPoller } from './payments/poller.js';
 import { verifyAccountMatchesPayId } from './payments/binance.js';
 import { ensureDefaults } from './services/settings.js';
 import { ensureBootstrapAdmin } from './web/auth.js';
-import { acquireLeadership, releaseLeadership } from './services/leader.js';
 
 async function main() {
   logger.info({ env: config.env, publicUrl: config.publicUrl }, '🚀 Booting TeleBot Shop');
@@ -32,22 +31,11 @@ async function main() {
   // Web server + admin panel + webhook (start first so health checks pass)
   await startServer();
 
-  // Telegram allows a single getUpdates consumer per token, so the bot and the
-  // poller run in exactly one process. On a container host that is always this
-  // one; under Passenger (cPanel) other workers serve HTTP only.
-  const leader = await acquireLeadership({
-    onLostLeadership: async () => {
-      stopPoller();
-      await stopBot().catch(() => {});
-    },
-  });
+  // Telegram bot (long polling)
+  await startBot();
 
-  if (leader) {
-    await startBot();
-    startPoller();
-  } else {
-    logger.info('running as a web-only worker (bot and poller are held elsewhere)');
-  }
+  // Background payment reconciliation
+  startPoller();
 
   // Confirm the advertised Binance ID is the account our API keys can read.
   // Deliberately not awaited into the boot path — a slow exchange must never
@@ -62,7 +50,6 @@ async function shutdown(signal) {
   try {
     stopPoller();
     await stopBot();
-    await releaseLeadership();
     await prisma.$disconnect();
   } catch (e) {
     logger.warn({ err: e.message }, 'error during shutdown');
